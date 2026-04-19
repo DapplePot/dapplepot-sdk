@@ -1,0 +1,116 @@
+import time
+import uuid
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+_handler_ref = None
+
+
+def instrument(client) -> None:
+    global _handler_ref
+    try:
+        from llama_index.core import Settings
+        from llama_index.core.callbacks import CallbackManager
+    except ImportError:
+        raise ImportError(
+            "llama_index not installed. Run: pip install 'dapplepot-sdk[llama-index]'"
+        )
+    handler = _DapplePotLlamaHandler(client)
+    Settings.callback_manager = CallbackManager([handler])
+    _handler_ref = handler
+    logger.debug('LlamaIndex instrumented')
+
+
+def uninstrument() -> None:
+    global _handler_ref
+    try:
+        from llama_index.core import Settings
+        from llama_index.core.callbacks import CallbackManager
+        Settings.callback_manager = CallbackManager([])
+    except ImportError:
+        pass
+    _handler_ref = None
+    logger.debug('LlamaIndex uninstrumented')
+
+
+class _DapplePotLlamaHandler:
+    def __init__(self, client):
+        self._client = client
+        self._adapter = client._adapter('llama_index')
+        self._sessions: dict = {}
+        self._t: dict = {}
+
+    # LlamaIndex calls these methods on its CBEventType enum values.
+    # We implement the BaseCallbackHandler interface loosely via duck-typing.
+
+    def on_event_start(self, event_type, payload=None, event_id='', **kwargs):
+        session_id = self._session_for(event_id)
+        self._t[event_id] = time.time()
+
+        et = str(event_type)
+        if 'QUERY' in et or 'AGENT_STEP' in et:
+            self._client._process_event(
+                self._adapter.session_start(session_id)
+            )
+        elif 'LLM' in et:
+            messages = (payload or {}).get('messages', [])
+            msgs = [{'role': getattr(m, 'role', 'user'), 'content': str(getattr(m, 'content', m))}
+                    for m in messages]
+            self._client._process_event(
+                self._adapter.llm_start(session_id, model='unknown', messages=msgs)
+            )
+        elif 'FUNCTION_CALL' in et or 'TOOL' in et:
+            tool_name = (payload or {}).get('tool_name', 'unknown')
+            tool_input = (payload or {}).get('tool_input', '')
+            self._client._process_event(
+                self._adapter.tool_start(session_id, tool_name=tool_name, tool_input=tool_input)
+            )
+
+    def on_event_end(self, event_type, payload=None, event_id='', **kwargs):
+        session_id = self._session_for(event_id)
+        latency_ms = self._elapsed(event_id)
+        et = str(event_type)
+
+        if 'QUERY' in et or 'AGENT_STEP' in et:
+            output = str((payload or {}).get('response', ''))
+            self._client._process_event(
+                self._adapter.session_end(session_id, output=output, latency_ms=latency_ms)
+            )
+        elif 'LLM' in et:
+            response = (payload or {}).get('response', None)
+            completion = ''
+            if response:
+                msg = getattr(response, 'message', None)
+                if msg:
+                    completion = str(getattr(msg, 'content', ''))
+                else:
+                    completion = str(response)
+            self._client._process_event(
+                self._adapter.llm_end(session_id, completion=completion)
+            )
+        elif 'FUNCTION_CALL' in et or 'TOOL' in et:
+            tool_name = (payload or {}).get('tool_name', 'unknown')
+            output = str((payload or {}).get('tool_output', ''))
+            self._client._process_event(
+                self._adapter.tool_end(session_id, tool_name=tool_name,
+                                       tool_output=output, latency_ms=latency_ms)
+            )
+
+    def start_trace(self, trace_id=None) -> None:
+        pass
+
+    def end_trace(self, trace_id=None, trace_map=None) -> None:
+        pass
+
+    def _session_for(self, event_id: str) -> str:
+        if event_id not in self._sessions:
+            self._sessions[event_id] = str(uuid.uuid4())
+            sampled = self._client._should_sample()
+            self._client._buffer.set_sampled(self._sessions[event_id], sampled)
+        return self._sessions[event_id]
+
+    def _elapsed(self, event_id: str):
+        start = self._t.pop(event_id, None)
+        return int((time.time() - start) * 1000) if start else None

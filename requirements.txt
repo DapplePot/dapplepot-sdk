@@ -1,0 +1,23 @@
+# Core
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Optional: control channel
+redis>=5.0.0
+
+# Optional framework integrations (install as needed)
+# pip install "dapplepot-sdk[langchain]"
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-openai>=0.1.0
+langgraph>=0.1.0
+
+# pip install "dapplepot-sdk[llama-index]"
+llama-index-core>=0.10.0
+
+# pip install "dapplepot-sdk[litellm]"
+litellm>=1.40.0
+
+# Provider SDKs
+openai>=1.30.0
+anthropic>=0.28.0

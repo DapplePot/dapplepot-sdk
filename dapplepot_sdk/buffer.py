@@ -1,0 +1,90 @@
+import queue
+import threading
+import time
+import logging
+
+import requests
+
+logger = logging.getLogger(__name__)
+
+
+class EventBuffer:
+    def __init__(self, ingest_url: str, sdk_key: str,
+                 flush_interval_ms: int = 500, flush_batch_size: int = 100):
+        self._url = ingest_url.rstrip('/') + '/v1/ingest/events'
+        self._sdk_key = sdk_key
+        self._interval = flush_interval_ms / 1000.0
+        self._batch_size = flush_batch_size
+        self._queue: queue.Queue = queue.Queue()
+        self._session_samples: dict = {}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name='dp-flush')
+        self._thread.start()
+
+    # ── sampling ──────────────────────────────────────────────────────────────
+
+    def set_sampled(self, session_id: str, sampled: bool) -> None:
+        self._session_samples[session_id] = sampled
+
+    def is_sampled(self, session_id: str) -> bool:
+        return self._session_samples.get(session_id, True)
+
+    # ── push ──────────────────────────────────────────────────────────────────
+
+    def push(self, event: dict) -> None:
+        sid = event.get('dp_session_id')
+        if sid and not self.is_sampled(sid):
+            return
+        self._queue.put(event)
+
+    def push_sync(self, event: dict) -> None:
+        """Flush a single event immediately (used before raising a blocked error)."""
+        self._send([event])
+
+    # ── flush loop ────────────────────────────────────────────────────────────
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            time.sleep(self._interval)
+            self._drain()
+
+    def _drain(self) -> None:
+        batch = []
+        try:
+            while len(batch) < self._batch_size:
+                batch.append(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+        if batch:
+            self._send(batch)
+
+    def _send(self, batch: list, retries: int = 3) -> None:
+        for attempt in range(retries):
+            try:
+                resp = requests.post(
+                    self._url,
+                    json={'events': batch},
+                    headers={
+                        'Authorization': f'Bearer {self._sdk_key}',
+                        'Content-Type': 'application/json',
+                    },
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                return
+            except Exception as exc:
+                if attempt == retries - 1:
+                    logger.error('dp-flush failed after %d retries: %s', retries, exc)
+                else:
+                    time.sleep(0.1 * (2 ** attempt))
+
+    # ── shutdown ──────────────────────────────────────────────────────────────
+
+    def shutdown(self, timeout_ms: int = 5000) -> None:
+        self._stop.set()
+        deadline = time.time() + timeout_ms / 1000.0
+        while time.time() < deadline and not self._queue.empty():
+            self._drain()
+            time.sleep(0.05)
+        self._drain()
+        self._thread.join(timeout=timeout_ms / 1000.0)
