@@ -41,12 +41,16 @@ class _DapplePotLlamaHandler:
         self._adapter = client._adapter('llama_index')
         self._sessions: dict = {}
         self._t: dict = {}
+        self._active_query: Optional[str] = None  # session_id of the current root query
+        # BaseCallbackHandler attributes consulted by CallbackManager.event()
+        self.event_starts_to_ignore: tuple = ()
+        self.event_ends_to_ignore: tuple = ()
 
     # LlamaIndex calls these methods on its CBEventType enum values.
     # We implement the BaseCallbackHandler interface loosely via duck-typing.
 
     def on_event_start(self, event_type, payload=None, event_id='', **kwargs):
-        session_id = self._session_for(event_id)
+        session_id = self._session_for(event_id, event_type=str(event_type))
         self._t[event_id] = time.time()
 
         et = str(event_type)
@@ -69,7 +73,7 @@ class _DapplePotLlamaHandler:
             )
 
     def on_event_end(self, event_type, payload=None, event_id='', **kwargs):
-        session_id = self._session_for(event_id)
+        session_id = self._session_for(event_id, event_type=str(event_type))
         latency_ms = self._elapsed(event_id)
         et = str(event_type)
 
@@ -78,6 +82,8 @@ class _DapplePotLlamaHandler:
             self._client._process_event(
                 self._adapter.session_end(session_id, output=output, latency_ms=latency_ms)
             )
+            if self._active_query == session_id:
+                self._active_query = None
         elif 'LLM' in et:
             response = (payload or {}).get('response', None)
             completion = ''
@@ -104,11 +110,20 @@ class _DapplePotLlamaHandler:
     def end_trace(self, trace_id=None, trace_map=None) -> None:
         pass
 
-    def _session_for(self, event_id: str) -> str:
+    def _session_for(self, event_id: str, event_type: str = '') -> str:
         if event_id not in self._sessions:
-            self._sessions[event_id] = str(uuid.uuid4())
-            sampled = self._client._should_sample()
-            self._client._buffer.set_sampled(self._sessions[event_id], sampled)
+            is_root = 'QUERY' in event_type or 'AGENT_STEP' in event_type
+            if is_root or self._active_query is None:
+                # Create a new session for root events or when there's no active query
+                session_id = str(uuid.uuid4())
+                sampled = self._client._should_sample()
+                self._client._buffer.set_sampled(session_id, sampled)
+                self._sessions[event_id] = session_id
+                if is_root:
+                    self._active_query = session_id
+            else:
+                # Child events (LLM, TOOL) reuse the active query's session
+                self._sessions[event_id] = self._active_query
         return self._sessions[event_id]
 
     def _elapsed(self, event_id: str):

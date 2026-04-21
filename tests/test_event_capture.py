@@ -28,7 +28,7 @@ def _make_dp(captured: list) -> DapplePot:
 
     from dapplepot_sdk.interceptor import OnlineCheckInterceptor
     dp._interceptor = OnlineCheckInterceptor(
-        online_checks=[], online_action='warn', buffer=buf, client=dp
+        check_actions={}, buffer=buf, client=dp
     )
     dp._control_channel = MagicMock()
     return dp

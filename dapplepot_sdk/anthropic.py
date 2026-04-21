@@ -32,9 +32,14 @@ def _patch(client) -> None:
     global _client_ref
     _client_ref = client
 
-    orig_create = _anthropic.Anthropic.messages.create if hasattr(_anthropic, 'Anthropic') else None
+    try:
+        _Messages = _anthropic.resources.Messages
+    except AttributeError:
+        logger.warning('Could not find anthropic.resources.Messages to patch')
+        return
+    orig_create = getattr(_Messages, 'create', None)
     if orig_create is None:
-        logger.warning('Could not patch anthropic.Anthropic.messages.create')
+        logger.warning('Could not patch anthropic.resources.Messages.create')
         return
 
     @functools.wraps(orig_create)
@@ -87,7 +92,7 @@ def _patch(client) -> None:
                                                    latency_ms=latency_ms))
         return response
 
-    _anthropic.Anthropic.messages.create = patched_create
+    _Messages.create = patched_create
 
 
 class _AnthropicProxy:

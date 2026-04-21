@@ -10,19 +10,12 @@ from dapplepot_sdk.interceptor import OnlineCheckInterceptor
 
 logger = logging.getLogger(__name__)
 
-# Maps API sub_check_id → SDK signal name (reverse of security service _ONLINE_SIGNAL_MAP)
-_SUBCHECK_TO_SIGNAL: dict[str, str] = {
-    'llm-01-online':       'prompt_injection',
-    'llm-09-online':       'insecure_output',
-    'llm-02-online-in':    'pii_input',
-    'llm-02-online-out':   'pii_output',
-    'llm-02-online-exfil': 'sensitive_data_exfiltration',
-    'llm-05-online':       'tool_misuse',
-    'asi-08-online':       'resource_exhaustion',
-    'asi-05-online-priv':  'privilege_escalation',
-    'asi-05-online-code':  'unsafe_code_execution',
-    'asi-04-online':       'supply_chain_tool',
-}
+# The 11 sub-check IDs that can be toggled to online mode (from signalRegistry.ts).
+_ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
+    'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
+    'SID-01a', 'SID-01c', 'SID-02a',
+    'EA-01a', 'EA-02b',
+})
 
 
 class DapplePotBlockedError(Exception):
@@ -74,6 +67,16 @@ class DapplePot:
             buffer=self._buffer,
             client=self,
         )
+
+        tool_manifest, max_tool_calls = self._fetch_tool_manifest()
+        ea01a_action = check_actions.get('EA-01a', 'block_call')
+        ea02b_action = check_actions.get('EA-02b', 'alert')
+        self._interceptor.set_tool_manifest(
+            manifest=tool_manifest,
+            action=ea01a_action,
+            max_tool_calls=max_tool_calls,
+            ea02b_action=ea02b_action,
+        )
         self._control_channel = ControlChannel(
             tenant_id=self._tenant_id,
             client=self,
@@ -84,7 +87,7 @@ class DapplePot:
     # ── startup ───────────────────────────────────────────────────────────────
 
     def _fetch_check_actions(self) -> dict[str, str]:
-        """Pull per-subcheck online config from the API. Returns {signal_name: action}."""
+        """Pull per-subcheck online config from the API. Returns {sub_check_id: action}."""
         url = f'{self._ingest_url}/v1/sdk/security/agents/{self._agent_id}/subcheck-config'
         try:
             resp = requests.get(
@@ -96,10 +99,8 @@ class DapplePot:
             overrides: dict = resp.json().get('overrides', {})
             check_actions = {}
             for sub_check_id, cfg in overrides.items():
-                if cfg.get('online_detection'):
-                    signal = _SUBCHECK_TO_SIGNAL.get(sub_check_id)
-                    if signal:
-                        check_actions[signal] = cfg.get('action', 'alert')
+                if cfg.get('online_detection') and sub_check_id in _ONLINE_CAPABLE_SUB_CHECKS:
+                    check_actions[sub_check_id] = cfg.get('action', 'alert')
             logger.debug('Loaded %d online checks from API', len(check_actions))
             return check_actions
         except Exception as exc:
@@ -108,6 +109,28 @@ class DapplePot:
                 url, exc,
             )
             return {}
+
+    def _fetch_tool_manifest(self) -> tuple[list[str], int | None]:
+        """Fetch the tool manifest and max_tool_calls_per_session from the API."""
+        url = f'{self._ingest_url}/v1/sdk/security/agents/{self._agent_id}/tool-manifest'
+        try:
+            resp = requests.get(
+                url,
+                headers={'Authorization': f'Bearer {self._sdk_key}'},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            manifest = data.get('tool_manifest') or []
+            max_calls = data.get('max_tool_calls_per_session')
+            logger.debug('Loaded tool manifest (%d tools, max_calls=%s)', len(manifest), max_calls)
+            return manifest, max_calls
+        except Exception as exc:
+            logger.warning(
+                'Could not fetch tool manifest from %s: %s — EA-01a/EA-02b disabled',
+                url, exc,
+            )
+            return [], None
 
     # ── internal helpers ──────────────────────────────────────────────────────
 

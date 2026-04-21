@@ -1,3 +1,4 @@
+import json
 import queue
 import threading
 import time
@@ -6,6 +7,17 @@ import logging
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+class _SafeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if hasattr(obj, 'model_dump'):
+            return obj.model_dump()
+        if hasattr(obj, 'dict'):
+            return obj.dict()
+        if hasattr(obj, '__dict__'):
+            return obj.__dict__
+        return repr(obj)
 
 
 class EventBuffer:
@@ -41,6 +53,11 @@ class EventBuffer:
         """Flush a single event immediately (used before raising a blocked error)."""
         self._send([event])
 
+    def flush_sync(self) -> None:
+        """Drain all queued events immediately on the calling thread.
+        Safe to call after shutdown() — push() always enqueues regardless of stop state."""
+        self._drain()
+
     # ── flush loop ────────────────────────────────────────────────────────────
 
     def _loop(self) -> None:
@@ -63,7 +80,7 @@ class EventBuffer:
             try:
                 resp = requests.post(
                     self._url,
-                    json={'events': batch},
+                    data=json.dumps({'events': batch}, cls=_SafeEncoder),
                     headers={
                         'Authorization': f'Bearer {self._sdk_key}',
                         'Content-Type': 'application/json',
@@ -82,9 +99,5 @@ class EventBuffer:
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         self._stop.set()
-        deadline = time.time() + timeout_ms / 1000.0
-        while time.time() < deadline and not self._queue.empty():
-            self._drain()
-            time.sleep(0.05)
-        self._drain()
         self._thread.join(timeout=timeout_ms / 1000.0)
+        self._drain()

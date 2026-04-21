@@ -1,6 +1,6 @@
 # DapplePot SDK — Agent Index
 
-**Role:** Python SDK for AI agent security & observability. Instruments LangChain/LangGraph agents (and any agent via the context-manager API) to emit structured events to the DapplePot ingest API and run real-time online threat detection.
+**Role:** Python SDK for AI agent security & observability. Instruments LangChain/LangGraph, OpenAI, Anthropic, LiteLLM, and LlamaIndex agents to emit structured events to the DapplePot ingest API and run real-time online threat detection.
 
 **Stack:** Python 3.8+, requests, redis (optional for control channel)
 
@@ -10,14 +10,18 @@
 
 ```
 dapplepot_sdk/
-  __init__.py          Public API: Client, Session, LangChainHandler
+  __init__.py          DapplePot client; DapplePotBlockedError; DapplePotSessionTerminatedError
   buffer.py            Thread-safe event buffer; flushes to POST /v1/ingest/events
-  interceptor.py       OnlineCheckInterceptor — 10 OWASP signal evaluators (hot path)
+  interceptor.py       OnlineCheckInterceptor — 11 sub-check evaluators (hot path)
   adapter.py           Event schema builders: session_start, node_start, llm_start, …
   _langchain.py        DapplePotCallbackHandler — LangChain/LangGraph callbacks
                        Tracks node names by run_id (_node_names dict) — accurate per-node attribution
-  session.py           SessionContext — context manager for manual instrumentation
-  control_channel.py   Redis pub/sub subscriber for live config updates (DAPPLEPOT_REDIS_URL)
+  openai.py            Drop-in OpenAI proxy — patches openai.chat.completions.create
+  anthropic.py         Drop-in Anthropic proxy — patches anthropic.resources.Messages.create
+  _litellm.py          LiteLLM success/failure callback handler
+  _llama_index.py      LlamaIndex process-wide instrumentation via Settings.callback_manager
+  session.py           SessionContext — context manager for scoping OpenAI/Anthropic calls
+  control_channel.py   Redis pub/sub subscriber for live config updates
 
 tests/
 pyproject.toml
@@ -32,22 +36,37 @@ pyproject.toml
 Agent code
   │
   ├─ DapplePotCallbackHandler (LangGraph callbacks)
-  │    on_chain_start(parent=None) → session_start → graph_start
+  │    on_chain_start(parent=None) → session_start
   │    on_chain_start(parent≠None) → node_start (name from run_id map)
   │    on_llm_start / on_chat_model_start → llm_start
   │    on_llm_end → llm_end
   │    on_tool_start → tool_start
   │    on_tool_end → tool_end
-  │    on_chain_end(parent=None) → session_end → graph_end
-  │    on_chain_error → session_error → graph_error
+  │    on_chain_end(parent=None) → session_end
+  │    on_chain_error → session_error
   │
-  ├─ OnlineCheckInterceptor (wraps LLM/tool calls)
-  │    → 10 OWASP checks evaluated synchronously
-  │    → fires security_finding events on detection
+  ├─ openai.py / anthropic.py (drop-in proxies)
+  │    patched create() → session_start → llm_start → llm_end → session_end
+  │    (session_start/end skipped when inside dp.session() context manager)
+  │
+  ├─ _litellm.py (callbacks)
+  │    on_success → session_start → llm_start → llm_end → session_end
+  │    on_failure → session_start → session_error
+  │
+  ├─ _llama_index.py (CallbackManager)
+  │    QUERY/AGENT_STEP start → session_start
+  │    LLM start/end → llm_start / llm_end
+  │    FUNCTION_CALL/TOOL start/end → tool_start / tool_end
+  │    QUERY/AGENT_STEP end → session_end
+  │
+  ├─ OnlineCheckInterceptor (evaluates every event before it hits the buffer)
+  │    → 11 sub-checks evaluated synchronously
+  │    → fires security_finding via push_sync (bypasses batch buffer)
+  │    → raises DapplePotBlockedError or DapplePotSessionTerminatedError on action
   │
   └─ EventBuffer
-       → batch POST to {DAPPLEPOT_INGEST_URL}/v1/ingest/events
-         header: x-sdk-key: {DAPPLEPOT_SDK_KEY}
+       → batch POST to {ingest_url}/v1/ingest/events
+         header: Authorization: Bearer {sdk_key}
 ```
 
 ---
@@ -56,37 +75,60 @@ Agent code
 
 | Event | Trigger | Forwarded to Security? |
 |-------|---------|----------------------|
-| `graph_start` | Session opens | ✅ (seeds per-agent config) |
+| `session_start` | Session opens | ✅ (seeds per-agent config) |
 | `node_start` | LangGraph node enters | — |
 | `node_end` | LangGraph node exits | — |
+| `node_error` | Node-level error | — |
 | `llm_start` | LLM call begins | — |
 | `llm_end` | LLM call completes | — |
 | `tool_start` | Tool call begins | — |
 | `tool_end` | Tool call completes | — |
-| `security_finding` | Online check fires | ✅ (persisted immediately) |
-| `graph_end` | Session succeeds | ✅ (triggers post-session scoring) |
-| `graph_error` | Session errors | ✅ (triggers post-session scoring) |
+| `security_finding` | Online check fires | ✅ (persisted immediately via push_sync) |
+| `session_end` | Session succeeds | ✅ (triggers post-session scoring) |
+| `session_error` | Session errors | ✅ (triggers post-session scoring) |
 
 ---
 
-## Online Checks (10 signals)
+## Online Checks (11 sub-checks)
 
-Evaluated synchronously in `OnlineCheckInterceptor` on every LLM input/output and tool call:
+Evaluated synchronously in `OnlineCheckInterceptor` on every event. Config fetched at startup from the API.
 
-| Signal | OWASP ID | Phase | Severity |
-|--------|----------|-------|----------|
-| `prompt_injection` | OW-LLM01 | input | high |
-| `insecure_output` | OW-LLM09 | output | high |
-| `pii_input` | OW-LLM02 | input | medium |
-| `pii_output` | OW-LLM02 | output | medium |
-| `sensitive_data_exfiltration` | OW-LLM02 | output | high |
-| `tool_misuse` | OW-LLM05 | tool | high |
-| `resource_exhaustion` | OW-ASI08 | any | medium |
-| `privilege_escalation` | OW-ASI05 | tool | critical |
-| `unsafe_code_execution` | OW-ASI05 | tool | critical |
-| `supply_chain_tool` | OW-ASI04 | tool | high |
+| Sub-check | OWASP | Category | Phase | Severity |
+|-----------|-------|----------|-------|----------|
+| `PI-01a` | OW-LLM01 | prompt_injection | llm_start, tool_start | high |
+| `PI-01b` | OW-LLM01 | prompt_injection | llm_start, tool_start | critical |
+| `PI-01c` | OW-LLM01 | prompt_injection | llm_start, tool_start | high |
+| `PI-02a` | OW-LLM01 | prompt_injection | tool_end | high |
+| `PI-05a` | OW-LLM01 | prompt_injection | llm_start, tool_start | high |
+| `PI-08a` | OW-LLM01 | prompt_injection | llm_start | high |
+| `SID-01a` | OW-LLM02 | data_disclosure | llm_end, tool_end | critical |
+| `SID-01c` | OW-LLM02 | data_disclosure | llm_end, tool_end | critical |
+| `SID-02a` | OW-LLM02 | data_disclosure | llm_end, tool_end | high |
+| `EA-01a` | OW-LLM06 | excessive_agency | tool_start | high |
+| `EA-02b` | OW-LLM06 | excessive_agency | tool_start | high |
 
-Sending format: `{signal, reason, action_taken, ...}` — the security service maps to full OWASP fields via `_ONLINE_SIGNAL_MAP`.
+Each finding is emitted as a `security_finding` event with `{sub_check_id, owasp_signal_id, category, severity, check_score, matched_text, confidence_tier, action_taken, detection_phase}`.
+
+### Actions
+
+| Action | Effect |
+|--------|--------|
+| `alert` | Logs warning; execution continues |
+| `block_call` | Raises `DapplePotBlockedError(signal, reason, session_id)` |
+| `terminate_session` | Raises `DapplePotSessionTerminatedError` |
+
+---
+
+## Startup API Calls
+
+At `DapplePot.__init__`, two blocking GET requests are made:
+
+| Endpoint | What it returns | Used for |
+|----------|----------------|----------|
+| `GET /v1/sdk/security/agents/{agent_id}/subcheck-config` | `{overrides: {sub_check_id: {online_detection, action}}}` | Activates sub-checks in interceptor |
+| `GET /v1/sdk/security/agents/{agent_id}/tool-manifest` | `{tool_manifest: [...], max_tool_calls_per_session: N}` | Powers EA-01a and EA-02b |
+
+Both fail silently (warning log only) — the SDK still runs, just with checks disabled.
 
 ---
 
@@ -99,12 +141,12 @@ Sending format: `{signal, reason, action_taken, ...}` — the security service m
 
 Supported commands:
 
-| command | Effect |
+| Command | Effect |
 |---------|--------|
 | `terminate_session` | Logs session ID for termination |
 | `update_tool_blocklist` | Updates `client._tool_allowlist` |
 | `update_sample_rate` | Updates `client._sample_rate` |
-| `update_online_checks` | Updates `client._interceptor.update_check_actions({signal: action, …})` |
+| `update_online_checks` | Calls `interceptor.update_check_actions({sub_check_id: action, …})` |
 
 ---
 
@@ -115,11 +157,28 @@ No environment variables are read. All config is passed directly:
 | Parameter | Required | Default | Notes |
 |-----------|----------|---------|-------|
 | `sdk_key` | ✅ | — | Sent as `Authorization: Bearer` header |
-| `tenant_id` | ✅ | — | |
-| `agent_id` | ✅ | — | Also used to fetch online check config |
+| `tenant_id` | ✅ | — | Used for control channel key |
+| `agent_id` | ✅ | — | Used to fetch sub-check config and tool manifest |
 | `ingest_url` | — | `http://localhost:3000` | SDK appends `/v1/ingest/events` |
 | `redis_url` | — | `redis://localhost:6379` | Control channel (optional dep) |
-| `sample_rate` | — | `1.0` | 0.0–1.0 |
+| `sample_rate` | — | `1.0` | 0.0–1.0; checked per session |
+| `pii_scrubber` | — | `None` | Must implement `.scrub_value(payload)` |
+| `redact_keys` | — | `None` | `list[str]` of payload keys to replace with `[REDACTED]` |
+| `flush_interval_ms` | — | `500` | Buffer flush interval |
+| `flush_batch_size` | — | `100` | Max events per flush batch |
+
+---
+
+## Public Methods
+
+| Method | Description |
+|--------|-------------|
+| `callback_handler(session_id=None)` | Returns a `DapplePotCallbackHandler` for LangChain/LangGraph |
+| `instrument_llama_index()` | Process-wide LlamaIndex instrumentation; call once at startup |
+| `uninstrument_llama_index()` | Remove LlamaIndex instrumentation |
+| `register_litellm_callbacks()` | Register DapplePot as LiteLLM's success/failure callbacks |
+| `session(session_id=None)` | Context manager scoping OpenAI/Anthropic calls to one session |
+| `shutdown(timeout_ms=5000)` | Flush remaining events and stop background threads |
 
 ---
 
@@ -127,9 +186,10 @@ No environment variables are read. All config is passed directly:
 
 | Need to... | File |
 |-----------|------|
-| Add a new online check | `interceptor.py` → `OnlineCheckInterceptor._check_*` + register in `_checks` set |
+| Add a new online sub-check | `interceptor.py` → add `_check_*` function, register in `_CHECKER_MAP` and `_CHECK_EVENT_TYPES` |
 | Change event schema | `adapter.py` → relevant builder method |
-| Debug events not reaching API | `buffer.py` → check URL construction, check `DAPPLEPOT_INGEST_URL` |
+| Debug events not reaching API | `buffer.py` → check URL construction and `sdk_key` header |
 | Add a new LangChain hook | `_langchain.py` → `DapplePotCallbackHandler.on_*` |
+| Add OpenAI/Anthropic tracing | `openai.py` / `anthropic.py` → `_patch()` function |
 | Change control channel behavior | `control_channel.py` → `_handle()` |
 | Change session lifecycle | `session.py` → `SessionContext.__exit__` |

@@ -25,6 +25,12 @@ class DapplePotCallbackHandler(_Base):
         self._t: dict = {}
         self._node_names: dict = {}
         self._root_run = None
+        self._seq = 0
+
+    def _emit(self, event: dict) -> None:
+        event['sequence_index'] = self._seq
+        self._seq += 1
+        self._client._process_event(event)
 
     # ── chain ─────────────────────────────────────────────────────────────────
 
@@ -37,7 +43,7 @@ class DapplePotCallbackHandler(_Base):
             self._root_run = run_id
             sampled = self._client._should_sample()
             self._client._buffer.set_sampled(self._session_id, sampled)
-            self._client._process_event(self._adapter.session_start(self._session_id))
+            self._emit(self._adapter.session_start(self._session_id))
         else:
             # LangGraph passes the node name via kwargs['name']; fall back to serialized
             name = (
@@ -47,7 +53,7 @@ class DapplePotCallbackHandler(_Base):
                 or 'chain'
             )
             self._node_names[run_id] = name
-            self._client._process_event(
+            self._emit(
                 self._adapter.node_start(
                     self._session_id, node_name=name,
                     parent_span_id=str(parent), input=inputs,
@@ -61,12 +67,12 @@ class DapplePotCallbackHandler(_Base):
 
         if parent is None:
             output_text = str(outputs) if outputs else None
-            self._client._process_event(
+            self._emit(
                 self._adapter.session_end(self._session_id, output=output_text, latency_ms=latency_ms)
             )
         else:
             name = self._node_names.pop(run_id, 'chain')
-            self._client._process_event(
+            self._emit(
                 self._adapter.node_end(
                     self._session_id, node_name=name,
                     output=str(outputs) if outputs else None,
@@ -75,13 +81,15 @@ class DapplePotCallbackHandler(_Base):
             )
 
     def on_chain_error(self, error, **kwargs):
-        self._client._process_event(
-            self._adapter.session_error(
-                self._session_id,
-                error_type=type(error).__name__,
-                error_message=str(error),
+        parent = kwargs.get('parent_run_id')
+        if parent is None:
+            self._emit(
+                self._adapter.session_error(
+                    self._session_id,
+                    error_type=type(error).__name__,
+                    error_message=str(error),
+                )
             )
-        )
 
     # ── LLM ──────────────────────────────────────────────────────────────────
 
@@ -91,7 +99,7 @@ class DapplePotCallbackHandler(_Base):
         model = (serialized or {}).get('name', 'unknown')
         messages = [{'role': 'user', 'content': p} for p in prompts]
         params = kwargs.get('invocation_params', {})
-        self._client._process_event(
+        self._emit(
             self._adapter.llm_start(
                 self._session_id, model=model, messages=messages,
                 temperature=params.get('temperature'),
@@ -111,7 +119,7 @@ class DapplePotCallbackHandler(_Base):
                     'content': getattr(msg, 'content', str(msg)),
                 })
         params = kwargs.get('invocation_params', {})
-        self._client._process_event(
+        self._emit(
             self._adapter.llm_start(
                 self._session_id, model=model, messages=formatted,
                 temperature=params.get('temperature'),
@@ -138,7 +146,7 @@ class DapplePotCallbackHandler(_Base):
                     'prompt_tokens': tok.get('prompt_tokens'),
                     'completion_tokens': tok.get('completion_tokens'),
                 }
-        self._client._process_event(
+        self._emit(
             self._adapter.llm_end(
                 self._session_id, completion=completion,
                 finish_reason=finish_reason, usage=usage,
@@ -146,7 +154,7 @@ class DapplePotCallbackHandler(_Base):
         )
 
     def on_llm_error(self, error, **kwargs):
-        self._client._process_event(
+        self._emit(
             self._adapter.node_error(
                 self._session_id, node_name='llm',
                 error_type=type(error).__name__, error_message=str(error),
@@ -159,7 +167,7 @@ class DapplePotCallbackHandler(_Base):
         run_id = str(kwargs.get('run_id', uuid.uuid4()))
         self._t[run_id] = time.time()
         tool_name = (serialized or {}).get('name', 'unknown')
-        self._client._process_event(
+        self._emit(
             self._adapter.tool_start(self._session_id, tool_name=tool_name, tool_input=input_str)
         )
 
@@ -167,7 +175,7 @@ class DapplePotCallbackHandler(_Base):
         run_id = str(kwargs.get('run_id', ''))
         tool_name = kwargs.get('name', 'unknown')
         latency_ms = self._elapsed(run_id)
-        self._client._process_event(
+        self._emit(
             self._adapter.tool_end(
                 self._session_id, tool_name=tool_name,
                 tool_output=output, latency_ms=latency_ms,
@@ -175,7 +183,7 @@ class DapplePotCallbackHandler(_Base):
         )
 
     def on_tool_error(self, error, **kwargs):
-        self._client._process_event(
+        self._emit(
             self._adapter.node_error(
                 self._session_id, node_name='tool',
                 error_type=type(error).__name__, error_message=str(error),
@@ -185,7 +193,7 @@ class DapplePotCallbackHandler(_Base):
     # ── agent ─────────────────────────────────────────────────────────────────
 
     def on_agent_action(self, action, **kwargs):
-        self._client._process_event(
+        self._emit(
             self._adapter.node_start(
                 self._session_id, node_name=action.tool,
                 input=action.tool_input,
@@ -193,7 +201,7 @@ class DapplePotCallbackHandler(_Base):
         )
 
     def on_agent_finish(self, finish, **kwargs):
-        self._client._process_event(
+        self._emit(
             self._adapter.node_end(
                 self._session_id, node_name='agent',
                 output=str(finish.return_values),

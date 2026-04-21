@@ -45,9 +45,7 @@ class _DapplePotLiteLLMHandler:
                 msg = getattr(choices[0], 'message', None)
                 if msg:
                     completion = getattr(msg, 'content', '') or ''
-                finish_reason = getattr(getattr(choices[0], None, None), 'finish_reason', None)
-                if hasattr(choices[0], 'finish_reason'):
-                    finish_reason = choices[0].finish_reason
+                finish_reason = getattr(choices[0], 'finish_reason', None)
             usage_obj = getattr(response_obj, 'usage', None)
             if usage_obj:
                 usage = {
@@ -62,6 +60,7 @@ class _DapplePotLiteLLMHandler:
         self._client._process_event(
             self._adapter.session_end(session_id, output=completion, latency_ms=latency_ms)
         )
+        self._client._buffer.flush_sync()
 
     def on_failure(self, kwargs, response_obj, start_time, end_time) -> None:
         session_id = str(kwargs.get('litellm_call_id', uuid.uuid4()))
@@ -77,4 +76,4 @@ class _DapplePotLiteLLMHandler:
                 error_message=str(exc),
             )
         )
-        self._client._process_event(self._adapter.session_end(session_id))
+        self._client._buffer.flush_sync()
