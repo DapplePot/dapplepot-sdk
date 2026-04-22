@@ -95,7 +95,6 @@ dp.DapplePot(
     agent_id,         # required — the agent being instrumented
     ingest_url = "http://localhost:3000",  # optional
     *,
-    redis_url          = "redis://localhost:6379",  # optional, for control channel
     sample_rate        = 1.0,    # optional, 0.0–1.0
     pii_scrubber       = None,   # optional, custom scrubber (must implement .scrub_value())
     redact_keys        = None,   # optional, list[str] of payload keys to redact
@@ -108,7 +107,7 @@ No environment variables are read. All events are posted to `{ingest_url}/v1/ing
 
 ## Online Security Checks
 
-The SDK runs **11 sub-checks** synchronously in the hot path via `OnlineCheckInterceptor`. When a check fires it emits a `security_finding` event immediately (without waiting for session end). Which checks run and what action they take is configured per-agent in the DapplePot UI and fetched automatically at SDK startup.
+The SDK runs **12 sub-checks** synchronously in the hot path via `OnlineCheckInterceptor`. When a check fires it emits a `security_finding` event immediately (without waiting for session end). Which checks run and what action they take is configured per-agent in the DapplePot UI and fetched automatically at SDK startup.
 
 | Sub-check | Category | Phase | Severity | Description |
 |-----------|----------|-------|----------|-------------|
@@ -121,6 +120,7 @@ The SDK runs **11 sub-checks** synchronously in the hot path via `OnlineCheckInt
 | `SID-01a` | data_disclosure | output | critical | API key / token in output |
 | `SID-01c` | data_disclosure | output | critical | JWT / session token in output |
 | `SID-02a` | data_disclosure | output | high | Multiple PII patterns co-occurring |
+| `IOH-01a` | output_handling | output | critical | Shell command pattern in output |
 | `EA-01a` | excessive_agency | tool_start | high | Tool not in approved manifest |
 | `EA-02b` | excessive_agency | tool_start | high | Tool calls exceed session limit |
 
@@ -128,11 +128,12 @@ Check config is fetched from `GET /v1/sdk/security/agents/{agent_id}/subcheck-co
 
 ### Actions
 
-When a check fires, it can take one of three actions (configured per sub-check in the UI):
+When a check fires, it can take one of four actions (configured per sub-check in the UI):
 
 | Action | Effect |
 |--------|--------|
 | `alert` | Logs a warning; execution continues |
+| `sanitize` | Redacts matched content from the event payload; execution continues |
 | `block_call` | Raises `DapplePotBlockedError` |
 | `terminate_session` | Raises `DapplePotSessionTerminatedError` |
 
@@ -149,14 +150,7 @@ except dp.DapplePotSessionTerminatedError:
 
 ## Control Channel
 
-When `redis` is installed, the SDK subscribes to `dapplepot:control:{tenant_id}` for live configuration updates. Supported commands:
-
-| Command | Effect |
-|---------|--------|
-| `terminate_session` | Flag a session for termination |
-| `update_tool_blocklist` | Update blocked tool list |
-| `update_sample_rate` | Change sampling rate |
-| `update_online_checks` | Enable/disable specific sub-checks live |
+The Redis pub/sub control channel (`dapplepot:control:{tenant_id}`) has been removed. The API now exposes `GET /v1/control/commands` (HTTP polling) for future command delivery. The `redis` optional dependency is no longer used by the SDK.
 
 ## Event Flow
 

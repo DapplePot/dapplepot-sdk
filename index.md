@@ -21,7 +21,7 @@ dapplepot_sdk/
   _litellm.py          LiteLLM success/failure callback handler
   _llama_index.py      LlamaIndex process-wide instrumentation via Settings.callback_manager
   session.py           SessionContext — context manager for scoping OpenAI/Anthropic calls
-  control_channel.py   Redis pub/sub subscriber for live config updates
+  control_channel.py   Reserved for future use (Redis pub/sub removed; HTTP polling planned)
 
 tests/
 pyproject.toml
@@ -89,7 +89,7 @@ Agent code
 
 ---
 
-## Online Checks (11 sub-checks)
+## Online Checks (12 sub-checks)
 
 Evaluated synchronously in `OnlineCheckInterceptor` on every event. Config fetched at startup from the API.
 
@@ -104,6 +104,7 @@ Evaluated synchronously in `OnlineCheckInterceptor` on every event. Config fetch
 | `SID-01a` | OW-LLM02 | data_disclosure | llm_end, tool_end | critical |
 | `SID-01c` | OW-LLM02 | data_disclosure | llm_end, tool_end | critical |
 | `SID-02a` | OW-LLM02 | data_disclosure | llm_end, tool_end | high |
+| `IOH-01a` | OW-LLM05 | output_handling | llm_end, tool_end | critical |
 | `EA-01a` | OW-LLM06 | excessive_agency | tool_start | high |
 | `EA-02b` | OW-LLM06 | excessive_agency | tool_start | high |
 
@@ -114,6 +115,7 @@ Each finding is emitted as a `security_finding` event with `{sub_check_id, owasp
 | Action | Effect |
 |--------|--------|
 | `alert` | Logs warning; execution continues |
+| `sanitize` | Redacts matched content from event payload; execution continues |
 | `block_call` | Raises `DapplePotBlockedError(signal, reason, session_id)` |
 | `terminate_session` | Raises `DapplePotSessionTerminatedError` |
 
@@ -134,19 +136,7 @@ Both fail silently (warning log only) — the SDK still runs, just with checks d
 
 ## Control Channel
 
-| Redis key | `dapplepot:control:{tenant_id}` (pub/sub) |
-|-----------|------------------------------------------|
-| URL source | `redis_url` constructor param (default `redis://localhost:6379`) |
-| Thread | daemon thread `dp-control`, started in `DapplePot.__init__` |
-
-Supported commands:
-
-| Command | Effect |
-|---------|--------|
-| `terminate_session` | Logs session ID for termination |
-| `update_tool_blocklist` | Updates `client._tool_allowlist` |
-| `update_sample_rate` | Updates `client._sample_rate` |
-| `update_online_checks` | Calls `interceptor.update_check_actions({sub_check_id: action, …})` |
+The Redis pub/sub control channel (`dapplepot:control:{tenant_id}`) has been removed. The `ControlChannel` class in `control_channel.py` is now a stub. Live config updates will be delivered via `GET /v1/control/commands` (HTTP polling — planned). The `redis_url` constructor parameter has been removed.
 
 ---
 
@@ -157,10 +147,9 @@ No environment variables are read. All config is passed directly:
 | Parameter | Required | Default | Notes |
 |-----------|----------|---------|-------|
 | `sdk_key` | ✅ | — | Sent as `Authorization: Bearer` header |
-| `tenant_id` | ✅ | — | Used for control channel key |
+| `tenant_id` | ✅ | — | Used in event payloads |
 | `agent_id` | ✅ | — | Used to fetch sub-check config and tool manifest |
 | `ingest_url` | — | `http://localhost:3000` | SDK appends `/v1/ingest/events` |
-| `redis_url` | — | `redis://localhost:6379` | Control channel (optional dep) |
 | `sample_rate` | — | `1.0` | 0.0–1.0; checked per session |
 | `pii_scrubber` | — | `None` | Must implement `.scrub_value(payload)` |
 | `redact_keys` | — | `None` | `list[str]` of payload keys to replace with `[REDACTED]` |
@@ -191,5 +180,5 @@ No environment variables are read. All config is passed directly:
 | Debug events not reaching API | `buffer.py` → check URL construction and `sdk_key` header |
 | Add a new LangChain hook | `_langchain.py` → `DapplePotCallbackHandler.on_*` |
 | Add OpenAI/Anthropic tracing | `openai.py` / `anthropic.py` → `_patch()` function |
-| Change control channel behavior | `control_channel.py` → `_handle()` |
+| Add a new online sub-check (output-side) | `interceptor.py` → add `_check_*` function, register in `_CHECKER_MAP`, `_CHECK_EVENT_TYPES`, and `_ONLINE_CAPABLE_SUB_CHECKS` |
 | Change session lifecycle | `session.py` → `SessionContext.__exit__` |
