@@ -5,7 +5,6 @@ import requests
 
 from dapplepot_sdk.adapter import TraceAdapter
 from dapplepot_sdk.buffer import EventBuffer
-from dapplepot_sdk.control_channel import ControlChannel
 from dapplepot_sdk.interceptor import OnlineCheckInterceptor
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 _ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
     'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
     'SID-01a', 'SID-01c', 'SID-02a',
+    'IOH-01a',
     'EA-01a', 'EA-02b',
 })
 
@@ -38,7 +38,6 @@ class DapplePot:
         agent_id: str,
         ingest_url: str = 'http://localhost:3000',
         *,
-        redis_url: str = 'redis://localhost:6379',
         sample_rate: float = 1.0,
         pii_scrubber=None,
         redact_keys: list = None,
@@ -77,13 +76,6 @@ class DapplePot:
             max_tool_calls=max_tool_calls,
             ea02b_action=ea02b_action,
         )
-        self._control_channel = ControlChannel(
-            tenant_id=self._tenant_id,
-            client=self,
-            redis_url=redis_url,
-        )
-        self._control_channel.start()
-
     # ── startup ───────────────────────────────────────────────────────────────
 
     def _fetch_check_actions(self) -> dict[str, str]:
@@ -163,7 +155,7 @@ class DapplePot:
         return obj
 
     def _process_event(self, event: dict) -> None:
-        self._interceptor.evaluate(event)
+        event = self._interceptor.evaluate(event)
         event = self._scrub(event)
         self._buffer.push(event)
 
@@ -195,5 +187,4 @@ class DapplePot:
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         """Flush remaining events and stop background threads."""
-        self._control_channel.stop()
         self._buffer.shutdown(timeout_ms=timeout_ms)

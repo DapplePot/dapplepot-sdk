@@ -46,11 +46,14 @@ class TraceAdapter:
             e['payload']['total_tokens'] = total_tokens
         return e
 
-    def session_error(self, session_id: str, error_type: str, error_message: str, traceback: str = None) -> dict:
+    def session_error(self, session_id: str, error_type: str, error_message: str,
+                      traceback: str = None, exit_reason: str = None) -> dict:
         e = self._base(session_id, 'session_error')
         e['payload'] = {'error_type': error_type, 'error_message': error_message}
         if traceback:
             e['payload']['traceback'] = traceback
+        if exit_reason:
+            e['payload']['exit_reason'] = exit_reason
         return e
 
     def node_start(self, session_id: str, node_name: str, parent_span_id=None, input=None) -> dict:

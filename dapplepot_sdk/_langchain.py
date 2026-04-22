@@ -16,6 +16,8 @@ except ImportError:
 class DapplePotCallbackHandler(_Base):
     """LangChain / LangGraph callback handler. One instance per session."""
 
+    raise_error = True  # propagate DapplePotBlockedError / SessionTerminatedError instead of swallowing
+
     def __init__(self, client, session_id: str = None):
         if _Base is not object:
             super().__init__()
@@ -83,6 +85,10 @@ class DapplePotCallbackHandler(_Base):
     def on_chain_error(self, error, **kwargs):
         parent = kwargs.get('parent_run_id')
         if parent is None:
+            from dapplepot_sdk import DapplePotSessionTerminatedError, DapplePotBlockedError
+            if isinstance(error, (DapplePotSessionTerminatedError, DapplePotBlockedError)):
+                # session_error was already emitted and flushed by the interceptor
+                return
             self._emit(
                 self._adapter.session_error(
                     self._session_id,
