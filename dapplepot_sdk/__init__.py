@@ -10,7 +10,7 @@ from dapplepot_sdk.interceptor import OnlineCheckInterceptor
 
 logger = logging.getLogger(__name__)
 
-# The 11 sub-check IDs that can be toggled to online mode (from signalRegistry.ts).
+# Online-capable security checks
 _ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
     'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
     'SID-01a', 'SID-01c', 'SID-02a',
@@ -163,8 +163,8 @@ class DapplePot:
         return obj
 
     def _process_event(self, event: dict) -> None:
-        self._interceptor.evaluate(event)
         event = self._scrub(event)
+        self._interceptor.evaluate(event)
         self._buffer.push(event)
 
     # ── public API ────────────────────────────────────────────────────────────

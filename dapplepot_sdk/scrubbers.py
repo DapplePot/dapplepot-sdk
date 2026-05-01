@@ -10,7 +10,10 @@ PATTERNS = {
     "iban":        (r'\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b', '[IBAN]'),
     "ip_address":  (r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '[IP]'),
     "aws_key":     (r'\bAKIA[0-9A-Z]{16}\b', '[AWS_KEY]'),
-    "jwt":         (r'\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[JWT]'),
+    "jwt":         (r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[JWT]'),
+    "password":    (r'password\s*=\s*\S+', '[PASSWORD]'),
+    "api_key":     (r'sk-[a-zA-Z0-9_-]{20,}', '[API_KEY]'),
+    "bearer_token": (r'Bearer\s+[A-Za-z0-9._-]+', '[BEARER_TOKEN]'),
 }
 
 

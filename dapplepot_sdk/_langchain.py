@@ -66,7 +66,7 @@ class DapplePotCallbackHandler(_Base):
         latency_ms = self._elapsed(run_id)
 
         if parent is None:
-            output_text = str(outputs) if outputs else None
+            output_text = self._serialize_output(outputs)
             self._emit(
                 self._adapter.session_end(self._session_id, output=output_text, latency_ms=latency_ms)
             )
@@ -75,7 +75,7 @@ class DapplePotCallbackHandler(_Base):
             self._emit(
                 self._adapter.node_end(
                     self._session_id, node_name=name,
-                    output=str(outputs) if outputs else None,
+                    output=self._serialize_output(outputs),
                     latency_ms=latency_ms,
                 )
             )
@@ -114,9 +114,16 @@ class DapplePotCallbackHandler(_Base):
         formatted = []
         for msg_list in messages:
             for msg in msg_list:
+                # Safely extract content from LangChain message objects
+                content = getattr(msg, 'content', None)
+                if content is None:
+                    content = str(msg)
+                # Ensure content is JSON-serializable (string)
+                if not isinstance(content, str):
+                    content = str(content)
                 formatted.append({
                     'role': getattr(msg, 'type', 'user'),
-                    'content': getattr(msg, 'content', str(msg)),
+                    'content': content,
                 })
         params = kwargs.get('invocation_params', {})
         self._emit(
@@ -175,10 +182,12 @@ class DapplePotCallbackHandler(_Base):
         run_id = str(kwargs.get('run_id', ''))
         tool_name = kwargs.get('name', 'unknown')
         latency_ms = self._elapsed(run_id)
+        # Ensure tool_output is JSON-serializable
+        tool_output = self._serialize_output(output)
         self._emit(
             self._adapter.tool_end(
                 self._session_id, tool_name=tool_name,
-                tool_output=output, latency_ms=latency_ms,
+                tool_output=tool_output, latency_ms=latency_ms,
             )
         )
 
@@ -209,6 +218,19 @@ class DapplePotCallbackHandler(_Base):
         )
 
     # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _serialize_output(self, obj):
+        """Convert non-JSON-serializable objects to strings."""
+        if obj is None:
+            return None
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._serialize_output(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._serialize_output(item) for item in obj]
+        # For LangChain objects and other non-serializable types, convert to string
+        return str(obj)
 
     def _elapsed(self, run_id: str):
         start = self._t.pop(run_id, None)
