@@ -1,284 +1,50 @@
 """Online security interceptor for dapplepot-sdk.
 
-Mirrors the langgraph-sdk OnlineDetector, adapted to the dapplepot-sdk event
-format (dp_event_type / dp_session_id / payload).
-
-12 onlineCapable sub-checks (from signalRegistry.ts):
-  PI-01a  PI-01b  PI-01c  PI-02a  PI-05a  PI-08a   (injection, input-side)
-  SID-01a  SID-01c  SID-02a                          (data disclosure, output-side)
-  IOH-01a                                            (output handling, output-side)
-  EA-01a  EA-02b                                     (excessive agency, tool_start)
+Calls backend /v1/sdk/security/online-check for detection.
+Handles findings locally: sanitization, blocking, termination.
 """
 from __future__ import annotations
 
-import base64
-import math
-import re
 import logging
 import uuid
+import re
 from typing import Any
+
+import requests
+from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-# ─── Pattern constants (mirrors langgraph-sdk online_detector.py) ─────────────
+ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
+    'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
+    'SID-01a', 'SID-01c', 'SID-02a',
+    'IOH-01a',
+    'EA-01a', 'EA-02b',
+})
 
-_ROLE_OVERRIDE_PATTERNS = [
-    re.compile(r"(?i)(ignore|disregard|forget).{0,30}(previous|prior|above|system).{0,30}(instruction|prompt|message)"),
-    re.compile(r"(?i)(pretend|act|behave|you are now|you are a).{0,40}(without|no|ignore).{0,30}(restriction|limit|filter|rule)"),
-    re.compile(r"(?i)(you (must|should|shall|will)).{0,40}(do|execute|perform|run)"),
-    re.compile(r"(?i)(new (instruction|task|directive|command))"),
-    re.compile(r"(?i)(override|bypass|circumvent).{0,30}(filter|restriction|policy)"),
-]
-
-_DELIMITER_PATTERNS = re.compile(
-    r"(?i)\[system\]|\<system\>|###\s*system|</s>|<\|im_start\|>|<\|im_end\|>"
-    r"|```\s*system|---\s*system\s*---|<<SYS>>|\[INST\]"
-)
-
-_HEX_PATTERN = re.compile(r"(?:\\x[0-9a-f]{2}){4,}", re.IGNORECASE)
-_BASE64_CANDIDATE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
-
-_SECRET_PATTERNS = [
-    re.compile(r"(?i)(sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35})"),
-    re.compile(r"(?i)(password|passwd|secret|api[_\-]key)\s*[:=]\s*\S{8,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*"),
-]
-
-_JWT_PATTERN = re.compile(r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}")
-
+# Sanitization patterns (kept for _sanitize_text)
 _PII_PATTERNS = [
-    re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b"),
+    re.compile(r"\b\d{3}[-.\\s]?\d{3}[-.\\s]?\d{4}\b"),
     re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"),
     re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     re.compile(r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\b"),
 ]
 
-_CODE_INJECTION = [
-    re.compile(r"(?i)(import\s+os|import\s+subprocess|__import__|eval\s*\(|exec\s*\()"),
-    re.compile(r"(?i)(require\s*\(\s*['\"]child_process|\.exec\s*\(|spawn\s*\()"),
-]
-
-_SHELL_PATTERNS = re.compile(
-    r"(?i)(os\.system|subprocess\.\w+|eval\s*\(|exec\s*\(|\$\([^)]+\)|&&|\|\||;\s*\w)"
-)
-
-_INDIRECT_INJECTION = [
-    re.compile(r"(?i)(ignore|disregard|forget).{0,30}(instruction|prompt|rule)"),
-    re.compile(r"(?i)(you (must|should|shall|will)).{0,40}(do|execute|perform|run)"),
-    re.compile(r"(?i)(new (instruction|task|directive|command))"),
-    re.compile(r"(?i)(override|bypass|circumvent).{0,30}(filter|restriction|policy)"),
-]
+_HEX_PATTERN = re.compile(r"(?:\\x[0-9a-f]{2}){4,}", re.IGNORECASE)
+_BASE64_CANDIDATE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+def _make_session(pool_connections: int = 4, pool_maxsize: int = 10) -> requests.Session:
+    """Create a requests.Session with connection pooling."""
+    s = requests.Session()
+    adapter = HTTPAdapter(pool_connections=pool_connections, pool_maxsize=pool_maxsize)
+    s.mount('http://', adapter)
+    s.mount('https://', adapter)
+    return s
 
-def _char_entropy(text: str) -> float:
-    if not text:
-        return 0.0
-    counts: dict[str, int] = {}
-    for c in text:
-        counts[c] = counts.get(c, 0) + 1
-    total = len(text)
-    return -sum((v / total) * math.log2(v / total) for v in counts.values())
-
-
-def _is_base64_encoded(text: str) -> bool:
-    for m in _BASE64_CANDIDATE.finditer(text):
-        candidate = m.group()
-        try:
-            decoded = base64.b64decode(candidate + "==").decode("utf-8", errors="ignore")
-            if len(decoded) > 10 and any(p.search(decoded) for p in _ROLE_OVERRIDE_PATTERNS):
-                return True
-        except Exception:
-            pass
-    return False
-
-
-# ─── Per-sub-check detector functions ─────────────────────────────────────────
-# Each returns a partial finding dict (just the detection-specific fields) or None.
-
-def _check_pi01a(content: str) -> dict | None:
-    for pat in _ROLE_OVERRIDE_PATTERNS:
-        m = pat.search(content)
-        if m:
-            return {
-                'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-01a',
-                'check_label': 'Role-override phrase match', 'check_score': 85,
-                'category': 'prompt_injection', 'severity': 'high',
-                'matched_text': m.group()[:200], 'confidence_tier': 'high',
-            }
-    return None
-
-
-def _check_pi01b(content: str) -> dict | None:
-    m = _DELIMITER_PATTERNS.search(content)
-    if m:
-        return {
-            'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-01b',
-            'check_label': 'Delimiter smuggling', 'check_score': 90,
-            'category': 'prompt_injection', 'severity': 'critical',
-            'matched_text': m.group()[:200], 'confidence_tier': 'deterministic',
-        }
-    return None
-
-
-def _check_pi01c(content: str) -> dict | None:
-    if _HEX_PATTERN.search(content) or _is_base64_encoded(content):
-        return {
-            'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-01c',
-            'check_label': 'Encoded / obfuscated payload', 'check_score': 75,
-            'category': 'prompt_injection', 'severity': 'high',
-            'matched_text': '[encoded content detected]', 'confidence_tier': 'high',
-        }
-    return None
-
-
-def _check_pi02a(content: str) -> dict | None:
-    for pat in _INDIRECT_INJECTION:
-        m = pat.search(content)
-        if m:
-            return {
-                'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-02a',
-                'check_label': 'Web-fetched content with injection pattern', 'check_score': 70,
-                'category': 'prompt_injection', 'severity': 'high',
-                'matched_text': m.group()[:200], 'confidence_tier': 'high',
-            }
-    return None
-
-
-def _check_pi05a(content: str) -> dict | None:
-    for pat in _CODE_INJECTION:
-        m = pat.search(content)
-        if m:
-            return {
-                'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-05a',
-                'check_label': 'Code injection pattern in prompt', 'check_score': 80,
-                'category': 'prompt_injection', 'severity': 'high',
-                'matched_text': m.group()[:200], 'confidence_tier': 'high',
-            }
-    return None
-
-
-def _check_pi08a(content: str) -> dict | None:
-    if len(content) > 80:
-        tail = content[-60:]
-        if _char_entropy(tail) > 4.5:
-            return {
-                'owasp_signal_id': 'OW-LLM01', 'sub_check_id': 'PI-08a',
-                'check_label': 'Adversarial suffix (high-entropy tail)', 'check_score': 75,
-                'category': 'prompt_injection', 'severity': 'high',
-                'matched_text': tail[:200], 'confidence_tier': 'medium',
-            }
-    return None
-
-
-def _check_sid01a(content: str) -> dict | None:
-    for pat in _SECRET_PATTERNS:
-        m = pat.search(content)
-        if m:
-            return {
-                'owasp_signal_id': 'OW-LLM02', 'sub_check_id': 'SID-01a',
-                'check_label': 'API key / token pattern in output', 'check_score': 95,
-                'category': 'data_disclosure', 'severity': 'critical',
-                'matched_text': m.group()[:200], 'confidence_tier': 'deterministic',
-            }
-    return None
-
-
-def _check_sid01c(content: str) -> dict | None:
-    m = _JWT_PATTERN.search(content)
-    if m:
-        return {
-            'owasp_signal_id': 'OW-LLM02', 'sub_check_id': 'SID-01c',
-            'check_label': 'JWT / session token in agent message', 'check_score': 90,
-            'category': 'data_disclosure', 'severity': 'critical',
-            'matched_text': m.group()[:200], 'confidence_tier': 'deterministic',
-        }
-    return None
-
-
-def _check_sid02a(content: str) -> dict | None:
-    hits = sum(1 for pat in _PII_PATTERNS if pat.search(content))
-    if hits >= 2:
-        return {
-            'owasp_signal_id': 'OW-LLM02', 'sub_check_id': 'SID-02a',
-            'check_label': 'Name + email + phone co-occurrence', 'check_score': 75,
-            'category': 'data_disclosure', 'severity': 'high',
-            'matched_text': '[multiple PII patterns detected]', 'confidence_tier': 'high',
-        }
-    return None
-
-
-def _check_ioh01a(content: str) -> dict | None:
-    m = _SHELL_PATTERNS.search(content)
-    if m:
-        return {
-            'owasp_signal_id': 'OW-LLM05', 'sub_check_id': 'IOH-01a',
-            'check_label': 'Shell command pattern in output', 'check_score': 90,
-            'category': 'output_handling', 'severity': 'critical',
-            'matched_text': m.group()[:200], 'confidence_tier': 'deterministic',
-        }
-    return None
-
-
-# ─── Dispatch tables ──────────────────────────────────────────────────────────
-
-_CHECKER_MAP: dict[str, Any] = {
-    'PI-01a':  _check_pi01a,
-    'PI-01b':  _check_pi01b,
-    'PI-01c':  _check_pi01c,
-    'PI-02a':  _check_pi02a,
-    'PI-05a':  _check_pi05a,
-    'PI-08a':  _check_pi08a,
-    'SID-01a': _check_sid01a,
-    'SID-01c': _check_sid01c,
-    'SID-02a': _check_sid02a,
-    'IOH-01a': _check_ioh01a,
-}
-
-_CHECK_EVENT_TYPES: dict[str, frozenset[str]] = {
-    'PI-01a':  frozenset({'llm_start', 'tool_start'}),
-    'PI-01b':  frozenset({'llm_start', 'tool_start'}),
-    'PI-01c':  frozenset({'llm_start', 'tool_start'}),
-    'PI-02a':  frozenset({'tool_end'}),
-    'PI-05a':  frozenset({'llm_start', 'tool_start'}),
-    'PI-08a':  frozenset({'llm_start'}),
-    'SID-01a': frozenset({'llm_end', 'tool_end'}),
-    'SID-01c': frozenset({'llm_end', 'tool_end'}),
-    'SID-02a': frozenset({'llm_end', 'tool_end'}),
-    'IOH-01a': frozenset({'llm_end', 'tool_end'}),  # shell cmd in outputs; call already completed
-}
-
-ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset(_CHECKER_MAP.keys())
-
-
-def _extract_content(event_type: str, payload: dict[str, Any]) -> list[str]:
-    """Extract text blobs to scan from the event payload."""
-    texts: list[str] = []
-    if event_type in ('llm_start', 'chat_model_start'):
-        for msg in payload.get('messages') or []:
-            content = msg.get('content', '') if isinstance(msg, dict) else str(msg)
-            if content:
-                texts.append(str(content))
-    elif event_type == 'llm_end':
-        c = payload.get('completion')
-        if c:
-            texts.append(str(c))
-    elif event_type == 'tool_start':
-        ti = payload.get('tool_input')
-        if ti:
-            texts.append(str(ti))
-    elif event_type == 'tool_end':
-        to = payload.get('tool_output')
-        if to:
-            texts.append(str(to))
-    return texts
-
-
-# ─── Interceptor ──────────────────────────────────────────────────────────────
 
 class OnlineCheckInterceptor:
-    """Runs online sub-checks per event.
+    """Calls backend for online checks, handles findings locally.
 
     Instantiated once per DapplePot instance.
     _action_map: { sub_check_id → action }
@@ -294,6 +60,7 @@ class OnlineCheckInterceptor:
         self._max_tool_calls: int | None = None
         self._ea02b_action: str = 'alert'
         self._tool_call_count: int = 0
+        self._http: requests.Session = _make_session()
         self.update_active(check_actions)
 
     def update_active(self, action_map: dict[str, str]) -> None:
@@ -309,7 +76,6 @@ class OnlineCheckInterceptor:
             if sid in ONLINE_CAPABLE_SUB_CHECKS
         }
 
-    # kept for backwards compat with control_channel
     def update_check_actions(self, check_actions: dict[str, str]) -> None:
         self.update_active(check_actions)
 
@@ -349,32 +115,35 @@ class OnlineCheckInterceptor:
         if not self.has_active:
             return event
 
-        et      = event.get('dp_event_type', '')
+        et = event.get('dp_event_type', '')
         payload = event.get('payload', {})
-        sid     = event.get('dp_session_id', '')
+        sid = event.get('dp_session_id', '')
+
+        if et == 'tool_start':
+            self._tool_call_count += 1
 
         findings = self._run(et, payload, sid)
         if not findings:
             return event
 
-        block_sub_check_id   = None
-        block_reason         = None
-        should_terminate     = False
-        terminate_sub_check  = None
+        block_sub_check_id = None
+        block_reason = None
+        should_terminate = False
+        terminate_sub_check = None
         sanitize_findings: list[dict] = []
 
         for finding, action in findings:
             security_event = {
                 **event,
                 'dp_event_type': 'security_finding',
-                'event_id':      str(uuid.uuid4()),
+                'event_id': str(uuid.uuid4()),
                 'payload': {
                     **payload,
-                    'trigger_event_id':   event.get('event_id'),
+                    'trigger_event_id': event.get('event_id'),
                     'trigger_event_type': event.get('dp_event_type'),
-                    'signal':             finding['sub_check_id'],
-                    'reason':           finding.get('matched_text', ''),
-                    'action_taken':     action,
+                    'signal': finding['sub_check_id'],
+                    'reason': finding.get('matched_text', ''),
+                    'action_taken': action,
                     **finding,
                 },
             }
@@ -386,7 +155,7 @@ class OnlineCheckInterceptor:
                     terminate_sub_check = finding['sub_check_id']
             elif action == 'block_call' and block_sub_check_id is None:
                 block_sub_check_id = finding['sub_check_id']
-                block_reason       = finding.get('matched_text', '')
+                block_reason = finding.get('matched_text', '')
             elif action == 'sanitize':
                 sanitize_findings.append(finding)
             # 'alert': finding emitted above; session continues unchanged
@@ -396,8 +165,6 @@ class OnlineCheckInterceptor:
 
         if should_terminate:
             from dapplepot_sdk import DapplePotSessionTerminatedError
-            # Emit session_error directly — don't rely on on_chain_error(parent=None)
-            # firing, which LangGraph may not call at the root level for node-level errors.
             session_error = self._client._adapter(
                 event.get('dp_framework', 'sdk')
             ).session_error(
@@ -489,57 +256,53 @@ class OnlineCheckInterceptor:
         payload: dict[str, Any],
         sid: str,
     ) -> list[tuple[dict, str]]:
-        """Return list of (finding_dict, action) for every check that fires."""
-        results: list[tuple[dict, str]] = []
+        """Call backend API for detection, return list of (finding_dict, action)."""
+        enabled_checks = dict(self._action_map)
+        if self._ea01a_online:
+            enabled_checks['EA-01a'] = self._ea01a_action
+        if self._max_tool_calls is not None:
+            enabled_checks['EA-02b'] = self._ea02b_action
 
-        if event_type == 'tool_start':
-            self._tool_call_count += 1
+        if not enabled_checks:
+            return []
 
-            # EA-01a: tool manifest enforcement
-            if self._ea01a_online and self._tool_manifest:
-                tool_name: str = payload.get('tool_name', '') or ''
-                if tool_name and tool_name not in self._tool_manifest:
-                    results.append(({
-                        'owasp_signal_id': 'OW-LLM06', 'sub_check_id': 'EA-01a',
-                        'check_label': 'Tool not in approved manifest invoked',
-                        'check_score': 80,
-                        'category': 'excessive_agency', 'severity': 'high',
-                        'matched_text': tool_name[:200], 'confidence_tier': 'deterministic',
-                        'detection_phase': 'online',
-                    }, self._ea01a_action))
+        # Serialize payload to ensure JSON compatibility
+        import json
+        try:
+            serializable_payload = json.loads(json.dumps(payload, default=str))
+        except Exception:
+            # If serialization fails, convert to string representation
+            serializable_payload = {k: str(v) for k, v in payload.items()}
 
-            # EA-02b: max tool calls per session
-            if self._max_tool_calls is not None and self._tool_call_count > self._max_tool_calls:
-                excess = self._tool_call_count - self._max_tool_calls
-                check_score = min(65 + excess * 2, 85)
-                results.append(({
-                    'owasp_signal_id': 'OW-LLM06', 'sub_check_id': 'EA-02b',
-                    'check_label': 'Tool calls exceed configured session limit',
-                    'check_score': check_score,
-                    'category': 'excessive_agency', 'severity': 'high',
-                    'matched_text': f'call #{self._tool_call_count} (limit: {self._max_tool_calls})',
-                    'confidence_tier': 'deterministic', 'detection_phase': 'online',
-                }, self._ea02b_action))
-
-        # Content-based checks
-        if not self._action_map:
+        url = f'{self._client._ingest_url}/v1/sdk/security/online-check'
+        try:
+            resp = self._http.post(
+                url,
+                json={
+                    'event_type': event_type,
+                    'payload': serializable_payload,
+                    'session_id': sid,
+                    'agent_id': self._client._agent_id,
+                    'tenant_id': self._client._tenant_id,
+                    'enabled_checks': enabled_checks,
+                    'tool_manifest': self._tool_manifest,
+                    'max_tool_calls': self._max_tool_calls,
+                    'tool_call_count': self._tool_call_count,
+                    'redact_keys': list(self._client._redact_keys),
+                },
+                headers={'Authorization': f'Bearer {self._client._sdk_key}'},
+                timeout=5,
+            )
+            resp.raise_for_status()
+            findings_list = resp.json().get('findings', [])
+            
+            # Convert backend response to (finding, action) tuples
+            results: list[tuple[dict, str]] = []
+            for f in findings_list:
+                action = f.pop('action', 'alert')
+                results.append((f, action))
+            
             return results
-        texts = _extract_content(event_type, payload)
-        if not texts:
-            return results
-
-        for sub_check_id, action in self._action_map.items():
-            allowed = _CHECK_EVENT_TYPES.get(sub_check_id)
-            if allowed and event_type not in allowed:
-                continue
-            checker = _CHECKER_MAP.get(sub_check_id)
-            if not checker:
-                continue
-            for text in texts:
-                finding = checker(text)
-                if finding:
-                    finding['detection_phase'] = 'online'
-                    results.append((finding, action))
-                    break  # one finding per sub-check per event
-
-        return results
+        except Exception as exc:
+            logger.warning('online-check call failed: %s — skipping', exc)
+            return []
