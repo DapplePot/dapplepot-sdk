@@ -1,8 +1,4 @@
-"""Online security interceptor for dapplepot-sdk.
-
-Calls backend /v1/sdk/security/online-check for detection.
-Handles findings locally: sanitization, blocking, termination.
-"""
+"""Event evaluation pipeline."""
 from __future__ import annotations
 
 import logging
@@ -15,7 +11,7 @@ from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
+_ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
     'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
     'SID-01a', 'SID-01c', 'SID-02a',
     'IOH-01a',
@@ -64,7 +60,7 @@ class OnlineCheckInterceptor:
         self.update_active(check_actions)
 
     def update_active(self, action_map: dict[str, str]) -> None:
-        """Replace the active sub-check→action map (called by control channel)."""
+        """Replace the active sub-check→action map."""
         self._ea01a_online = 'EA-01a' in action_map
         if 'EA-01a' in action_map:
             self._ea01a_action = action_map['EA-01a']
@@ -73,7 +69,7 @@ class OnlineCheckInterceptor:
         self._action_map = {
             sid: action
             for sid, action in action_map.items()
-            if sid in ONLINE_CAPABLE_SUB_CHECKS
+            if sid in _ONLINE_CAPABLE_SUB_CHECKS
         }
 
     def update_check_actions(self, check_actions: dict[str, str]) -> None:

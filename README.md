@@ -1,6 +1,6 @@
 # dapplepot-sdk
 
-Python SDK for instrumenting LLM agents with DapplePot security observability. Drop-in integrations for LangChain/LangGraph, OpenAI, Anthropic, LiteLLM, and LlamaIndex — sends structured events to the DapplePot API over HTTP.
+Python SDK for instrumenting LLM agents with DapplePot security observability. Drop-in integrations for LangChain/LangGraph, OpenAI, Anthropic, LiteLLM, and LlamaIndex — sends structured events to the DapplePot ingest API and runs real-time threat detection in the hot path.
 
 ## Installation
 
@@ -18,15 +18,18 @@ pip install "dapplepot-sdk[all]"          # Everything
 
 ## Quick Start
 
+Get your `sdk_key`, `tenant_id`, `agent_id`, and `ingest_url` from the DapplePot dashboard.
+
 ### LangChain / LangGraph
 
 ```python
 import dapplepot_sdk as dp
 
 client = dp.DapplePot(
-    sdk_key   = "dp_sk_...",
-    tenant_id = "your-tenant-id",
-    agent_id  = "your-agent-id",
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "your-tenant-id",
+    agent_id   = "your-agent-id",
+    ingest_url = "https://ingest.dapplepot.com",
 )
 
 handler = client.callback_handler()
@@ -39,12 +42,17 @@ result = graph.invoke({"messages": [...]}, config={"callbacks": [handler]})
 import dapplepot_sdk as dp
 from dapplepot_sdk.openai import openai  # use in place of `import openai`
 
-client = dp.DapplePot(sdk_key="dp_sk_...", tenant_id="...", agent_id="...")
+client = dp.DapplePot(
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "...",
+    agent_id   = "...",
+    ingest_url = "https://ingest.dapplepot.com",
+)
 
 response = openai.chat.completions.create(model="gpt-4o", messages=[...])
 ```
 
-Use with `dp.session()` to group multiple calls under one session:
+Use `dp.session()` to group multiple calls under one session:
 
 ```python
 with client.session() as session:
@@ -58,7 +66,12 @@ with client.session() as session:
 import dapplepot_sdk as dp
 from dapplepot_sdk.anthropic import anthropic  # use in place of `import anthropic`
 
-client = dp.DapplePot(sdk_key="dp_sk_...", tenant_id="...", agent_id="...")
+client = dp.DapplePot(
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "...",
+    agent_id   = "...",
+    ingest_url = "https://ingest.dapplepot.com",
+)
 
 response = anthropic.Anthropic().messages.create(model="claude-3-5-sonnet-20241022", ...)
 ```
@@ -69,7 +82,12 @@ response = anthropic.Anthropic().messages.create(model="claude-3-5-sonnet-202410
 import dapplepot_sdk as dp
 import litellm
 
-client = dp.DapplePot(sdk_key="dp_sk_...", tenant_id="...", agent_id="...")
+client = dp.DapplePot(
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "...",
+    agent_id   = "...",
+    ingest_url = "https://ingest.dapplepot.com",
+)
 client.register_litellm_callbacks()
 
 response = litellm.completion(model="gpt-4o", messages=[...])
@@ -80,7 +98,12 @@ response = litellm.completion(model="gpt-4o", messages=[...])
 ```python
 import dapplepot_sdk as dp
 
-client = dp.DapplePot(sdk_key="dp_sk_...", tenant_id="...", agent_id="...")
+client = dp.DapplePot(
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "...",
+    agent_id   = "...",
+    ingest_url = "https://ingest.dapplepot.com",
+)
 client.instrument_llama_index()  # process-wide, call once at startup
 
 # all LlamaIndex queries are now traced automatically
@@ -90,45 +113,45 @@ client.instrument_llama_index()  # process-wide, call once at startup
 
 ```python
 dp.DapplePot(
-    sdk_key,          # required — your SDK key from the DapplePot UI
-    tenant_id,        # required — your tenant ID
-    agent_id,         # required — the agent being instrumented
-    ingest_url = "http://localhost:3000",  # optional
+    sdk_key,     # required — your SDK key from the DapplePot dashboard
+    tenant_id,   # required — your tenant ID
+    agent_id,    # required — the agent being instrumented
+    ingest_url,  # required — your DapplePot ingest endpoint
     *,
-    sample_rate        = 1.0,    # optional, 0.0–1.0
-    pii_scrubber       = None,   # optional, custom scrubber (must implement .scrub_value())
-    redact_keys        = None,   # optional, list[str] of payload keys to redact
-    flush_interval_ms  = 500,    # optional
-    flush_batch_size   = 100,    # optional
+    sample_rate        = 1.0,   # 0.0–1.0; controls what fraction of sessions are traced
+    pii_scrubber       = None,  # custom scrubber object (must implement .scrub_value())
+    redact_keys        = None,  # list[str] of payload keys to replace with [REDACTED]
+    flush_interval_ms  = 500,   # how often the background thread flushes buffered events
+    flush_batch_size   = 100,   # max events per flush batch
 )
 ```
 
-No environment variables are read. All events are posted to `{ingest_url}/v1/ingest/events`.
+All events are posted to `{ingest_url}/v1/ingest/events` with `Authorization: Bearer {sdk_key}`.
 
 ## Online Security Checks
 
-The SDK runs **12 sub-checks** synchronously in the hot path via `OnlineCheckInterceptor`. When a check fires it emits a `security_finding` event immediately (without waiting for session end). Which checks run and what action they take is configured per-agent in the DapplePot UI and fetched automatically at SDK startup.
+The SDK runs **12 sub-checks** synchronously on every event. When a check fires it emits a finding immediately (without waiting for session end). Which checks are active and what action they take is configured per-agent in the DapplePot dashboard and fetched automatically at SDK startup.
 
-| Sub-check | Category | Phase | Severity | Description |
-|-----------|----------|-------|----------|-------------|
-| `PI-01a` | prompt_injection | input | high | Role-override phrase match |
-| `PI-01b` | prompt_injection | input | critical | Delimiter smuggling |
-| `PI-01c` | prompt_injection | input | high | Encoded / obfuscated payload |
-| `PI-02a` | prompt_injection | tool_end | high | Indirect injection via tool output |
-| `PI-05a` | prompt_injection | input | high | Code injection pattern in prompt |
-| `PI-08a` | prompt_injection | llm_start | high | Adversarial suffix (high-entropy tail) |
-| `SID-01a` | data_disclosure | output | critical | API key / token in output |
-| `SID-01c` | data_disclosure | output | critical | JWT / session token in output |
-| `SID-02a` | data_disclosure | output | high | Multiple PII patterns co-occurring |
-| `IOH-01a` | output_handling | output | critical | Shell command pattern in output |
-| `EA-01a` | excessive_agency | tool_start | high | Tool not in approved manifest |
-| `EA-02b` | excessive_agency | tool_start | high | Tool calls exceed session limit |
+| Sub-check | Category | Phase | Severity |
+|-----------|----------|-------|----------|
+| `PI-01a` | prompt_injection | input | high |
+| `PI-01b` | prompt_injection | input | critical |
+| `PI-01c` | prompt_injection | input | high |
+| `PI-02a` | prompt_injection | tool_end | high |
+| `PI-05a` | prompt_injection | input | high |
+| `PI-08a` | prompt_injection | llm_start | high |
+| `SID-01a` | data_disclosure | output | critical |
+| `SID-01c` | data_disclosure | output | critical |
+| `SID-02a` | data_disclosure | output | high |
+| `IOH-01a` | output_handling | output | critical |
+| `EA-01a` | excessive_agency | tool_start | high |
+| `EA-02b` | excessive_agency | tool_start | high |
 
-Check config is fetched from `GET /v1/sdk/security/agents/{agent_id}/subcheck-config`. Tool manifest and `max_tool_calls_per_session` are fetched from `GET /v1/sdk/security/agents/{agent_id}/tool-manifest`. Update checks in the DapplePot UI and restart the agent — no code changes needed.
+Check configuration and the tool manifest are fetched from the DapplePot API at startup. Update checks in the dashboard and restart your agent — no code changes needed.
 
 ### Actions
 
-When a check fires, it can take one of four actions (configured per sub-check in the UI):
+When a check fires, it takes one of four actions (configured per sub-check in the dashboard):
 
 | Action | Effect |
 |--------|--------|
@@ -148,43 +171,48 @@ except dp.DapplePotSessionTerminatedError:
     print("Session terminated by security policy")
 ```
 
-## Control Channel
+## PII Scrubbing
 
-The Redis pub/sub control channel (`dapplepot:control:{tenant_id}`) has been removed. The API now exposes `GET /v1/control/commands` (HTTP polling) for future command delivery. The `redis` optional dependency is no longer used by the SDK.
+Use the built-in `RegexScrubber` or implement your own:
+
+```python
+from dapplepot_sdk.scrubbers import RegexScrubber
+
+scrubber = RegexScrubber(patterns=["email", "ssn", "aws_key", "jwt", "phone"])
+
+client = dp.DapplePot(
+    sdk_key    = "dp_sk_...",
+    tenant_id  = "...",
+    agent_id   = "...",
+    ingest_url = "https://ingest.dapplepot.com",
+    pii_scrubber = scrubber,
+)
+```
+
+Built-in pattern names: `email`, `phone`, `ssn`, `credit_card`, `uk_nino`, `iban`, `ip_address`, `aws_key`, `jwt`.
+
+To implement a custom scrubber, subclass `BaseScrubber` and implement `scrub(text: str) -> str`:
+
+```python
+from dapplepot_sdk.scrubbers import BaseScrubber
+
+class MyScrubber(BaseScrubber):
+    def scrub(self, text: str) -> str:
+        return text.replace("sensitive", "[REDACTED]")
+```
 
 ## Event Flow
 
 ```
 SDK → POST {ingest_url}/v1/ingest/events
   ├─ session_start      session opened
-  ├─ node_start/end     LangGraph node enter/exit (per run_id name tracking)
+  ├─ node_start/end     LangGraph node enter/exit
   ├─ node_error         node-level error
   ├─ llm_start/end      LLM call enter/exit (tokens, latency, model)
   ├─ tool_start/end     tool call enter/exit
-  ├─ security_finding   online check fired (real-time, bypasses buffer)
-  └─ session_end/error  session closed → triggers post-session scoring
+  └─ session_end/error  session closed
 ```
 
-## Key Files
+## License
 
-| File | Description |
-|------|-------------|
-| `dapplepot_sdk/__init__.py` | `DapplePot` client, `DapplePotBlockedError`, `DapplePotSessionTerminatedError` |
-| `buffer.py` | Thread-safe event buffer + HTTP flush to `/v1/ingest/events` |
-| `interceptor.py` | `OnlineCheckInterceptor` — 11 sub-check evaluators in the hot path |
-| `adapter.py` | Event schema builders (`session_start`, `node_start`, `llm_start`, …) |
-| `_langchain.py` | `DapplePotCallbackHandler` — LangChain/LangGraph callbacks |
-| `openai.py` | Drop-in OpenAI proxy — patches `openai.chat.completions.create` |
-| `anthropic.py` | Drop-in Anthropic proxy — patches `anthropic.resources.Messages.create` |
-| `_litellm.py` | LiteLLM success/failure callback handler |
-| `_llama_index.py` | LlamaIndex process-wide instrumentation via `CallbackManager` |
-| `session.py` | `SessionContext` — context manager for manual session scoping |
-| `control_channel.py` | Redis pub/sub subscriber for live config updates |
-
-## Related Repos
-
-| Repo | Role |
-|------|------|
-| [dapplepot-api](../dapplepot-api) | Hono/Node ingest API + REST endpoints (port 3000) |
-| [dapplepot-security](../dapplepot-security) | FastAPI security scoring engine (port 8001) |
-| [dapplepot-ui](../dapplepot-ui) | React dashboard (port 5173) |
+MIT

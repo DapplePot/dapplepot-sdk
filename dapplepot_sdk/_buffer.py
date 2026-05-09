@@ -30,7 +30,7 @@ class EventBuffer:
         self._queue: queue.Queue = queue.Queue()
         self._session_samples: dict = {}
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name='dp-flush')
+        self._thread = threading.Thread(target=self._loop, daemon=True, name='telemetry')
         self._thread.start()
 
     # ── sampling ──────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ class EventBuffer:
                 return
             except Exception as exc:
                 if attempt == retries - 1:
-                    logger.error('dp-flush failed after %d retries: %s', retries, exc)
+                    logger.error('event flush failed after %d retries: %s', retries, exc)
                 else:
                     time.sleep(0.1 * (2 ** attempt))
 

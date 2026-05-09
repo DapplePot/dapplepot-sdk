@@ -1,15 +1,16 @@
 import logging
 import random
+import sys
 
 import requests
 
-from dapplepot_sdk.adapter import TraceAdapter
-from dapplepot_sdk.buffer import EventBuffer
-from dapplepot_sdk.interceptor import OnlineCheckInterceptor
+from dapplepot_sdk._adapter import TraceAdapter
+from dapplepot_sdk._buffer import EventBuffer
+from dapplepot_sdk._interceptor import OnlineCheckInterceptor
 
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 logger = logging.getLogger(__name__)
 
-# The 11 sub-check IDs that can be toggled to online mode (from signalRegistry.ts).
 _ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
     'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
     'SID-01a', 'SID-01c', 'SID-02a',
@@ -36,7 +37,7 @@ class DapplePot:
         sdk_key: str,
         tenant_id: str,
         agent_id: str,
-        ingest_url: str = 'http://localhost:3000',
+        ingest_url: str,
         *,
         sample_rate: float = 1.0,
         pii_scrubber=None,
@@ -76,6 +77,14 @@ class DapplePot:
             max_tool_calls=max_tool_calls,
             ea02b_action=ea02b_action,
         )
+
+        # Auto-register with OpenAI/Anthropic proxies if they were imported before
+        # the client was created (the documented usage pattern).
+        for mod_name in ('dapplepot_sdk.openai', 'dapplepot_sdk.anthropic'):
+            mod = sys.modules.get(mod_name)
+            if mod is not None:
+                mod._patch(self)
+
     # ── startup ───────────────────────────────────────────────────────────────
 
     def _fetch_check_actions(self) -> dict[str, str]:
