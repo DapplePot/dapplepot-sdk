@@ -59,8 +59,17 @@ def _patch(client) -> None:
 
         model = kwargs.get('model', 'unknown')
         messages = kwargs.get('messages', [])
-        dp._process_event(adapter.llm_start(session_id, model=model, messages=messages,
-                                             max_tokens=kwargs.get('max_tokens')))
+        try:
+            dp._process_event(adapter.llm_start(session_id, model=model, messages=messages,
+                                                 max_tokens=kwargs.get('max_tokens')))
+        except Exception as pre_exc:
+            from dapplepot_sdk import DapplePotBlockedError
+            if isinstance(pre_exc, DapplePotBlockedError):
+                if standalone:
+                    dp._buffer.flush_sync()
+                return None
+            raise
+
         t0 = time.time()
         try:
             response = orig_create(self_sdk, *args, **kwargs)

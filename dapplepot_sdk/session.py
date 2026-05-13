@@ -34,13 +34,15 @@ class SessionContext:
         latency_ms = int((time.time() - self._t0) * 1000) if self._t0 else None
         framework = getattr(self._client, '_framework', 'unknown')
         if exc_type:
-            err = self._client._adapter(framework).session_error(
-                self._session_id,
-                error_type=exc_type.__name__,
-                error_message=str(exc_val),
-                traceback=''.join(_tb.format_tb(exc_tb)),
-            )
-            self._client._process_event(err)
+            from dapplepot_sdk import DapplePotSessionTerminatedError, DapplePotBlockedError
+            if not issubclass(exc_type, (DapplePotSessionTerminatedError, DapplePotBlockedError)):
+                err = self._client._adapter(framework).session_error(
+                    self._session_id,
+                    error_type=exc_type.__name__,
+                    error_message=str(exc_val),
+                    traceback=''.join(_tb.format_tb(exc_tb)),
+                )
+                self._client._process_event(err)
         else:
             end = self._client._adapter(framework).session_end(self._session_id, latency_ms=latency_ms)
             self._client._process_event(end)

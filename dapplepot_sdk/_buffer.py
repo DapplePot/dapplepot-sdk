@@ -1,3 +1,4 @@
+import atexit
 import json
 import queue
 import threading
@@ -29,9 +30,13 @@ class EventBuffer:
         self._batch_size = flush_batch_size
         self._queue: queue.Queue = queue.Queue()
         self._session_samples: dict = {}
+        self._session_seqs: dict = {}
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True, name='telemetry')
         self._thread.start()
+        # Flush remaining events on normal process exit so the daemon thread
+        # dying at interpreter shutdown doesn't silently drop buffered events.
+        atexit.register(self.shutdown)
 
     # ── sampling ──────────────────────────────────────────────────────────────
 
@@ -47,6 +52,13 @@ class EventBuffer:
         sid = event.get('dp_session_id')
         if sid and not self.is_sampled(sid):
             return
+        # Stamp a monotonic per-session sequence_index for SDK paths that don't
+        # set one (openai, anthropic, session.py). LangChain sets it in _emit()
+        # before calling here, so we leave those events unchanged.
+        if 'sequence_index' not in event and sid:
+            n = self._session_seqs.get(sid, 0)
+            self._session_seqs[sid] = n + 1
+            event = {**event, 'sequence_index': n}
         self._queue.put(event)
 
     def push_sync(self, event: dict) -> None:
