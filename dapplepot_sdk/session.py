@@ -25,14 +25,16 @@ class SessionContext:
         sampled = self._client._should_sample()
         self._client._buffer.set_sampled(self._session_id, sampled)
         _local.session_id = self._session_id
-        event = self._client._adapter('unknown').session_start(self._session_id)
+        framework = getattr(self._client, '_framework', 'unknown')
+        event = self._client._adapter(framework).session_start(self._session_id)
         self._client._process_event(event)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         latency_ms = int((time.time() - self._t0) * 1000) if self._t0 else None
+        framework = getattr(self._client, '_framework', 'unknown')
         if exc_type:
-            err = self._client._adapter('unknown').session_error(
+            err = self._client._adapter(framework).session_error(
                 self._session_id,
                 error_type=exc_type.__name__,
                 error_message=str(exc_val),
@@ -40,7 +42,7 @@ class SessionContext:
             )
             self._client._process_event(err)
         else:
-            end = self._client._adapter('unknown').session_end(self._session_id, latency_ms=latency_ms)
+            end = self._client._adapter(framework).session_end(self._session_id, latency_ms=latency_ms)
             self._client._process_event(end)
         _local.session_id = None
         return False

@@ -78,12 +78,14 @@ class DapplePot:
             ea02b_action=ea02b_action,
         )
 
+        self._framework = 'unknown'
         # Auto-register with OpenAI/Anthropic proxies if they were imported before
         # the client was created (the documented usage pattern).
         for mod_name in ('dapplepot_sdk.openai', 'dapplepot_sdk.anthropic'):
             mod = sys.modules.get(mod_name)
             if mod is not None:
                 mod._patch(self)
+                self._framework = mod_name.split('.')[-1]  # 'openai' or 'anthropic'
 
     # ── startup ───────────────────────────────────────────────────────────────
 
@@ -173,12 +175,14 @@ class DapplePot:
     def callback_handler(self, session_id: str = None):
         """Return a fresh LangChain/LangGraph CallbackHandler for one session."""
         from dapplepot_sdk._langchain import DapplePotCallbackHandler
+        self._framework = 'langchain'
         return DapplePotCallbackHandler(self, session_id=session_id)
 
     def instrument_llama_index(self) -> None:
         """Process-wide LlamaIndex instrumentation. Call once at startup."""
         from dapplepot_sdk._llama_index import instrument
         instrument(self)
+        self._framework = 'llama_index'
 
     def uninstrument_llama_index(self) -> None:
         from dapplepot_sdk._llama_index import uninstrument
@@ -188,6 +192,7 @@ class DapplePot:
         """Register DapplePot as LiteLLM's success/failure callbacks."""
         from dapplepot_sdk._litellm import register
         register(self)
+        self._framework = 'litellm'
 
     def session(self, session_id: str = None):
         """Context manager that wraps OpenAI / Anthropic calls in a DapplePot session."""
