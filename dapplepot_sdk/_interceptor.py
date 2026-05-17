@@ -52,9 +52,10 @@ class OnlineCheckInterceptor:
         self._action_map: dict[str, str] = {}
         self._ea01a_online: bool = False
         self._ea01a_action: str = 'block_call'
+        self._ea02b_online: bool = False
+        self._ea02b_action: str = 'alert'
         self._tool_manifest: list[str] = []
         self._max_tool_calls: int | None = None
-        self._ea02b_action: str = 'alert'
         self._tool_call_count: int = 0
         self._http: requests.Session = _make_session()
         self.update_active(check_actions)
@@ -64,6 +65,7 @@ class OnlineCheckInterceptor:
         self._ea01a_online = 'EA-01a' in action_map
         if 'EA-01a' in action_map:
             self._ea01a_action = action_map['EA-01a']
+        self._ea02b_online = 'EA-02b' in action_map
         if 'EA-02b' in action_map:
             self._ea02b_action = action_map['EA-02b']
         self._action_map = {
@@ -97,7 +99,7 @@ class OnlineCheckInterceptor:
         return (
             bool(self._action_map)
             or (self._ea01a_online and bool(self._tool_manifest))
-            or self._max_tool_calls is not None
+            or (self._ea02b_online and self._max_tool_calls is not None)
         )
 
     def evaluate(self, event: dict) -> dict:
@@ -256,7 +258,7 @@ class OnlineCheckInterceptor:
         enabled_checks = dict(self._action_map)
         if self._ea01a_online:
             enabled_checks['EA-01a'] = self._ea01a_action
-        if self._max_tool_calls is not None:
+        if self._ea02b_online and self._max_tool_calls is not None:
             enabled_checks['EA-02b'] = self._ea02b_action
 
         if not enabled_checks:
