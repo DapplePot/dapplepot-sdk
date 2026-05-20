@@ -82,13 +82,15 @@ class TraceAdapter:
         return e
 
     def llm_start(self, session_id: str, model: str, messages: list,
-                  temperature=None, max_tokens=None) -> dict:
+                  temperature=None, max_tokens=None, tools=None) -> dict:
         e = self._base(session_id, 'llm_start')
         e['payload'] = {'model': model, 'messages': messages}
         if temperature is not None:
             e['payload']['temperature'] = temperature
         if max_tokens is not None:
             e['payload']['max_tokens'] = max_tokens
+        if tools:
+            e['payload']['tools'] = tools
         return e
 
     def llm_end(self, session_id: str, completion: str, finish_reason=None, usage=None) -> dict:
@@ -103,6 +105,14 @@ class TraceAdapter:
     def tool_start(self, session_id: str, tool_name: str, tool_input) -> dict:
         e = self._base(session_id, 'tool_start')
         e['payload'] = {'tool_name': tool_name, 'tool_input': tool_input}
+        return e
+
+    def tool_error(self, session_id: str, tool_name: str, error_message: str,
+                   error_type: str = "ToolError", tool_input=None) -> dict:
+        e = self._base(session_id, 'tool_error')
+        e['payload'] = {'tool_name': tool_name, 'error_type': error_type, 'error_message': error_message}
+        if tool_input is not None:
+            e['payload']['tool_input'] = tool_input
         return e
 
     def tool_end(self, session_id: str, tool_name: str, tool_output, latency_ms=None) -> dict:

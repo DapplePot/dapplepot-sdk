@@ -59,9 +59,11 @@ def _patch(client) -> None:
 
         model = kwargs.get('model', 'unknown')
         messages = kwargs.get('messages', [])
+        tools = kwargs.get('tools') or []
         try:
             dp._process_event(adapter.llm_start(session_id, model=model, messages=messages,
-                                                 max_tokens=kwargs.get('max_tokens')))
+                                                 max_tokens=kwargs.get('max_tokens'),
+                                                 tools=tools))
         except Exception as pre_exc:
             from dapplepot_sdk import DapplePotBlockedError
             if isinstance(pre_exc, DapplePotBlockedError):
