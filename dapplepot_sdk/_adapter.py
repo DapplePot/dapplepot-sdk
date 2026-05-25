@@ -6,6 +6,24 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 
+def first_user_text(messages: list) -> "str | None":
+    """Extract the first user message text from a standard messages list."""
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") in ("user", "human"):
+            content = msg.get("content", "")
+            if isinstance(content, str) and content:
+                return content
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        t = block.get("text", "")
+                        if t:
+                            return t
+    return None
+
+
 class TraceAdapter:
     def __init__(self, tenant_id: str, agent_id: str, framework: str):
         self._tenant_id = tenant_id
@@ -26,13 +44,15 @@ class TraceAdapter:
             'payload':           {},
         }
 
-    def session_start(self, session_id: str, user_id=None, metadata=None) -> dict:
+    def session_start(self, session_id: str, user_id=None, metadata=None, input=None) -> dict:
         e = self._base(session_id, 'session_start')
         e['payload'] = {'session_id': session_id, 'framework': self._framework, 'agent_id': self._agent_id}
         if user_id:
             e['payload']['user_id'] = user_id
         if metadata:
             e['payload']['metadata'] = metadata
+        if input is not None:
+            e['payload']['input'] = input
         return e
 
     def session_end(self, session_id: str, output=None, latency_ms=None, total_tokens=None) -> dict:

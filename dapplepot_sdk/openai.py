@@ -20,6 +20,7 @@ except ImportError:
     raise ImportError("openai not installed. Run: pip install openai")
 
 from dapplepot_sdk.session import get_current_session_id
+from dapplepot_sdk._adapter import first_user_text
 
 _client_ref = None
 
@@ -43,13 +44,12 @@ def _patch(client) -> None:
         session_id = get_current_session_id() or str(uuid.uuid4())
         adapter = dp._adapter('openai')
 
+        model = kwargs.get('model', 'unknown')
+        messages = kwargs.get('messages', [])
         if get_current_session_id() is None:
             sampled = dp._should_sample()
             dp._buffer.set_sampled(session_id, sampled)
-            dp._process_event(adapter.session_start(session_id))
-
-        model = kwargs.get('model', 'unknown')
-        messages = kwargs.get('messages', [])
+            dp._process_event(adapter.session_start(session_id, input=first_user_text(messages)))
         dp._process_event(adapter.llm_start(session_id, model=model, messages=messages,
                                              temperature=kwargs.get('temperature'),
                                              max_tokens=kwargs.get('max_tokens')))

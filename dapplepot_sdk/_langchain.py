@@ -2,6 +2,8 @@ import time
 import uuid
 import logging
 
+from dapplepot_sdk._adapter import first_user_text
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -45,7 +47,13 @@ class DapplePotCallbackHandler(_Base):
             self._root_run = run_id
             sampled = self._client._should_sample()
             self._client._buffer.set_sampled(self._session_id, sampled)
-            self._emit(self._adapter.session_start(self._session_id))
+            initial = (
+                first_user_text(inputs.get("messages", [])) if isinstance(inputs, dict) and "messages" in inputs
+                else inputs.get("input") if isinstance(inputs, dict) and "input" in inputs
+                else str(inputs) if isinstance(inputs, str) and inputs
+                else None
+            )
+            self._emit(self._adapter.session_start(self._session_id, input=initial))
         else:
             # LangGraph passes the node name via kwargs['name']; fall back to serialized
             name = (

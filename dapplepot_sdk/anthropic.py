@@ -20,6 +20,7 @@ except ImportError:
     raise ImportError("anthropic not installed. Run: pip install anthropic")
 
 from dapplepot_sdk.session import get_current_session_id
+from dapplepot_sdk._adapter import first_user_text
 
 _client_ref = None
 
@@ -52,13 +53,12 @@ def _patch(client) -> None:
         adapter = dp._adapter('anthropic')
 
         standalone = get_current_session_id() is None
+        model = kwargs.get('model', 'unknown')
+        messages = kwargs.get('messages', [])
         if standalone:
             sampled = dp._should_sample()
             dp._buffer.set_sampled(session_id, sampled)
-            dp._process_event(adapter.session_start(session_id))
-
-        model = kwargs.get('model', 'unknown')
-        messages = kwargs.get('messages', [])
+            dp._process_event(adapter.session_start(session_id, input=first_user_text(messages)))
         tools = kwargs.get('tools') or []
         try:
             dp._process_event(adapter.llm_start(session_id, model=model, messages=messages,

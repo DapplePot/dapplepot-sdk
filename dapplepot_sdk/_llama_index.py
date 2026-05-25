@@ -3,6 +3,8 @@ import uuid
 import logging
 from typing import Optional
 
+from dapplepot_sdk._adapter import first_user_text
+
 logger = logging.getLogger(__name__)
 
 _handler_ref = None
@@ -55,8 +57,14 @@ class _DapplePotLlamaHandler:
 
         et = str(event_type)
         if 'QUERY' in et or 'AGENT_STEP' in et:
+            p = payload or {}
+            initial = (
+                p.get('query_str')
+                or (first_user_text(p.get('messages', [])) if p.get('messages') else None)
+                or (str(p['input']) if p.get('input') else None)
+            ) or None
             self._client._process_event(
-                self._adapter.session_start(session_id)
+                self._adapter.session_start(session_id, input=initial)
             )
         elif 'LLM' in et:
             messages = (payload or {}).get('messages', [])

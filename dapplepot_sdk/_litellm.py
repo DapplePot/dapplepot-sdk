@@ -2,6 +2,8 @@ import time
 import uuid
 import logging
 
+from dapplepot_sdk._adapter import first_user_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,7 +33,7 @@ class _DapplePotLiteLLMHandler:
         messages = kwargs.get('messages', [])
         latency_ms = int((end_time - start_time).total_seconds() * 1000)
 
-        self._client._process_event(self._adapter.session_start(session_id))
+        self._client._process_event(self._adapter.session_start(session_id, input=first_user_text(messages)))
         self._client._process_event(
             self._adapter.llm_start(session_id, model=model, messages=messages)
         )
