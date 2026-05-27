@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 _handler_ref = None
 
 
-def instrument(client) -> None:
+def instrument(client, user_context_id: str = None) -> None:
     global _handler_ref
     try:
         from llama_index.core import Settings
@@ -19,7 +19,7 @@ def instrument(client) -> None:
         raise ImportError(
             "llama_index not installed. Run: pip install 'dapplepot-sdk[llama-index]'"
         )
-    handler = _DapplePotLlamaHandler(client)
+    handler = _DapplePotLlamaHandler(client, user_context_id=user_context_id)
     Settings.callback_manager = CallbackManager([handler])
     _handler_ref = handler
     logger.debug('LlamaIndex instrumented')
@@ -38,8 +38,9 @@ def uninstrument() -> None:
 
 
 class _DapplePotLlamaHandler:
-    def __init__(self, client):
+    def __init__(self, client, user_context_id: str = None):
         self._client = client
+        self._user_context_id = user_context_id
         self._adapter = client._adapter('llama_index')
         self._sessions: dict = {}
         self._t: dict = {}
@@ -64,7 +65,9 @@ class _DapplePotLlamaHandler:
                 or (str(p['input']) if p.get('input') else None)
             ) or None
             self._client._process_event(
-                self._adapter.session_start(session_id, input=initial)
+                self._adapter.session_start(
+                    session_id, input=initial, user_context_id=self._user_context_id
+                )
             )
         elif 'LLM' in et:
             messages = (payload or {}).get('messages', [])

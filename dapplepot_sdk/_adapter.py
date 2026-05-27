@@ -44,11 +44,13 @@ class TraceAdapter:
             'payload':           {},
         }
 
-    def session_start(self, session_id: str, user_id=None, metadata=None, input=None) -> dict:
+    def session_start(self, session_id: str, user_context_id: str = None, metadata=None, input=None) -> dict:
         e = self._base(session_id, 'session_start')
+        if user_context_id:
+            e['user_context_id'] = user_context_id
         e['payload'] = {'session_id': session_id, 'framework': self._framework, 'agent_id': self._agent_id}
-        if user_id:
-            e['payload']['user_id'] = user_id
+        if user_context_id:
+            e['payload']['user_context_id'] = user_context_id
         if metadata:
             e['payload']['metadata'] = metadata
         if input is not None:
@@ -113,9 +115,11 @@ class TraceAdapter:
             e['payload']['tools'] = tools
         return e
 
-    def llm_end(self, session_id: str, completion: str, finish_reason=None, usage=None) -> dict:
+    def llm_end(self, session_id: str, completion: str, model: str | None = None, finish_reason=None, usage=None) -> dict:
         e = self._base(session_id, 'llm_end')
         e['payload'] = {'completion': completion}
+        if model:
+            e['payload']['model'] = model
         if finish_reason:
             e['payload']['finish_reason'] = finish_reason
         if usage:

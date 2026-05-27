@@ -32,8 +32,11 @@ class _DapplePotLiteLLMHandler:
         model = kwargs.get('model', 'unknown')
         messages = kwargs.get('messages', [])
         latency_ms = int((end_time - start_time).total_seconds() * 1000)
+        user_context_id = (kwargs.get('metadata') or {}).get('user_context_id')
 
-        self._client._process_event(self._adapter.session_start(session_id, input=first_user_text(messages)))
+        self._client._process_event(self._adapter.session_start(
+            session_id, input=first_user_text(messages), user_context_id=user_context_id
+        ))
         self._client._process_event(
             self._adapter.llm_start(session_id, model=model, messages=messages)
         )
@@ -70,7 +73,8 @@ class _DapplePotLiteLLMHandler:
         self._client._buffer.set_sampled(session_id, sampled)
 
         exc = kwargs.get('exception', Exception('unknown'))
-        self._client._process_event(self._adapter.session_start(session_id))
+        user_context_id = (kwargs.get('metadata') or {}).get('user_context_id')
+        self._client._process_event(self._adapter.session_start(session_id, user_context_id=user_context_id))
         self._client._process_event(
             self._adapter.session_error(
                 session_id,

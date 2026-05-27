@@ -96,6 +96,7 @@ def _patch(client) -> None:
                 'completion_tokens': getattr(usage_obj, 'output_tokens', None),
             }
         dp._process_event(adapter.llm_end(session_id, completion=completion,
+                                          model=model,
                                           finish_reason=getattr(response, 'stop_reason', None),
                                           usage=usage))
         if standalone:

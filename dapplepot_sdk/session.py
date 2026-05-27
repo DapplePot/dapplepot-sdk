@@ -11,14 +11,19 @@ def get_current_session_id() -> str | None:
 
 
 class SessionContext:
-    def __init__(self, client, session_id: str = None):
+    def __init__(self, client, session_id: str = None, user_context_id: str = None):
         self._client = client
         self._session_id = session_id or str(uuid.uuid4())
+        self._user_context_id = user_context_id
         self._t0 = None
 
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def user_context_id(self) -> str | None:
+        return self._user_context_id
 
     def __enter__(self):
         self._t0 = time.time()
@@ -26,7 +31,9 @@ class SessionContext:
         self._client._buffer.set_sampled(self._session_id, sampled)
         _local.session_id = self._session_id
         framework = getattr(self._client, '_framework', 'unknown')
-        event = self._client._adapter(framework).session_start(self._session_id)
+        event = self._client._adapter(framework).session_start(
+            self._session_id, user_context_id=self._user_context_id
+        )
         self._client._process_event(event)
         return self
 
