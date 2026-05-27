@@ -78,7 +78,8 @@ def _patch(client) -> None:
                 'completion_tokens': getattr(usage_obj, 'completion_tokens', None),
             }
         dp._process_event(adapter.llm_end(session_id, completion=completion,
-                                          finish_reason=finish_reason, usage=usage))
+                                          finish_reason=finish_reason, usage=usage,
+                                          latency_ms=latency_ms))
         if get_current_session_id() is None:
             dp._process_event(adapter.session_end(session_id, output=completion,
                                                    latency_ms=latency_ms))

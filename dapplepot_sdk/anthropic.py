@@ -98,7 +98,8 @@ def _patch(client) -> None:
         dp._process_event(adapter.llm_end(session_id, completion=completion,
                                           model=model,
                                           finish_reason=getattr(response, 'stop_reason', None),
-                                          usage=usage))
+                                          usage=usage,
+                                          latency_ms=latency_ms))
         if standalone:
             dp._process_event(adapter.session_end(session_id, output=completion,
                                                    latency_ms=latency_ms))

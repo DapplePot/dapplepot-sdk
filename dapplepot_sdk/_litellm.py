@@ -60,7 +60,8 @@ class _DapplePotLiteLLMHandler:
 
         self._client._process_event(
             self._adapter.llm_end(session_id, completion=completion,
-                                  finish_reason=finish_reason, usage=usage)
+                                  finish_reason=finish_reason, usage=usage,
+                                  latency_ms=latency_ms)
         )
         self._client._process_event(
             self._adapter.session_end(session_id, output=completion, latency_ms=latency_ms)

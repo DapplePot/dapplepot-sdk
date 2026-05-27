@@ -105,7 +105,7 @@ class _DapplePotLlamaHandler:
                 else:
                     completion = str(response)
             self._client._process_event(
-                self._adapter.llm_end(session_id, completion=completion)
+                self._adapter.llm_end(session_id, completion=completion, latency_ms=latency_ms)
             )
         elif 'FUNCTION_CALL' in et or 'TOOL' in et:
             tool_name = (payload or {}).get('tool_name', 'unknown')

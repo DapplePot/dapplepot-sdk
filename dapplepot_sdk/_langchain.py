@@ -167,6 +167,7 @@ class DapplePotCallbackHandler(_Base):
             self._adapter.llm_end(
                 self._session_id, completion=completion,
                 finish_reason=finish_reason, usage=usage,
+                latency_ms=latency_ms,
             )
         )
 

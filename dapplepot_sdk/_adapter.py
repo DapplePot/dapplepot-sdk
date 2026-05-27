@@ -115,7 +115,7 @@ class TraceAdapter:
             e['payload']['tools'] = tools
         return e
 
-    def llm_end(self, session_id: str, completion: str, model: str | None = None, finish_reason=None, usage=None) -> dict:
+    def llm_end(self, session_id: str, completion: str, model: str | None = None, finish_reason=None, usage=None, latency_ms=None) -> dict:
         e = self._base(session_id, 'llm_end')
         e['payload'] = {'completion': completion}
         if model:
@@ -124,6 +124,8 @@ class TraceAdapter:
             e['payload']['finish_reason'] = finish_reason
         if usage:
             e['payload']['usage'] = usage
+        if latency_ms is not None:
+            e['payload']['latency_ms'] = latency_ms
         return e
 
     def tool_start(self, session_id: str, tool_name: str, tool_input) -> dict:
