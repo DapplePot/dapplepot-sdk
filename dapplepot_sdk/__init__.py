@@ -194,10 +194,12 @@ class DapplePot:
         register(self)
         self._framework = 'litellm'
 
-    def session(self, session_id: str = None, user_context_id: str = None):
+    def session(self, session_id: str = None, user_context_id: str = None,
+                user_tenant_id: str = None):
         """Context manager that wraps OpenAI / Anthropic calls in a DapplePot session."""
         from dapplepot_sdk.session import SessionContext
-        return SessionContext(self, session_id=session_id, user_context_id=user_context_id)
+        return SessionContext(self, session_id=session_id, user_context_id=user_context_id,
+                              user_tenant_id=user_tenant_id)
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         """Flush remaining events and stop background threads."""

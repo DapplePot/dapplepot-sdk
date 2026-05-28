@@ -44,13 +44,18 @@ class TraceAdapter:
             'payload':           {},
         }
 
-    def session_start(self, session_id: str, user_context_id: str = None, metadata=None, input=None) -> dict:
+    def session_start(self, session_id: str, user_context_id: str = None, metadata=None,
+                      input=None, user_tenant_id: str = None) -> dict:
         e = self._base(session_id, 'session_start')
         if user_context_id:
             e['user_context_id'] = user_context_id
+        if user_tenant_id:
+            e['user_tenant_id'] = user_tenant_id
         e['payload'] = {'session_id': session_id, 'framework': self._framework, 'agent_id': self._agent_id}
         if user_context_id:
             e['payload']['user_context_id'] = user_context_id
+        if user_tenant_id:
+            e['payload']['user_tenant_id'] = user_tenant_id
         if metadata:
             e['payload']['metadata'] = metadata
         if input is not None:

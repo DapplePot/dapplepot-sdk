@@ -11,10 +11,12 @@ def get_current_session_id() -> str | None:
 
 
 class SessionContext:
-    def __init__(self, client, session_id: str = None, user_context_id: str = None):
+    def __init__(self, client, session_id: str = None, user_context_id: str = None,
+                 user_tenant_id: str = None):
         self._client = client
         self._session_id = session_id or str(uuid.uuid4())
         self._user_context_id = user_context_id
+        self._user_tenant_id = user_tenant_id
         self._t0 = None
 
     @property
@@ -25,6 +27,10 @@ class SessionContext:
     def user_context_id(self) -> str | None:
         return self._user_context_id
 
+    @property
+    def user_tenant_id(self) -> str | None:
+        return self._user_tenant_id
+
     def __enter__(self):
         self._t0 = time.time()
         sampled = self._client._should_sample()
@@ -32,7 +38,9 @@ class SessionContext:
         _local.session_id = self._session_id
         framework = getattr(self._client, '_framework', 'unknown')
         event = self._client._adapter(framework).session_start(
-            self._session_id, user_context_id=self._user_context_id
+            self._session_id,
+            user_context_id=self._user_context_id,
+            user_tenant_id=self._user_tenant_id,
         )
         self._client._process_event(event)
         return self
