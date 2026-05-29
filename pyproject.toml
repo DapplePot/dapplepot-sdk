@@ -7,14 +7,11 @@ name = "dapplepot-sdk"
 version = "0.1.0"
 description = "DapplePot Python SDK for AI agent security observability — instruments LangChain/LangGraph, OpenAI, and Anthropic"
 readme = "README.md"
-requires-python = ">=3.8"
-license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+license = "Apache-2.0"
 keywords = ["llm", "security", "observability", "ai-agents", "langchain", "openai", "anthropic", "langgraph"]
 classifiers = [
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -51,3 +48,6 @@ all = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dapplepot_sdk*"]
+
+[project.urls]
+Homepage = "https://dapplepot.com"

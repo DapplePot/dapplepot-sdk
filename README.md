@@ -3,7 +3,7 @@
 Python SDK for instrumenting LLM agents with DapplePot security observability. Drop-in integrations for **LangChain/LangGraph**, **OpenAI**, and **Anthropic** — sends structured events to the DapplePot ingest API and runs real-time threat detection in the hot path.
 
 ## Installation
-
+Ensure you have Python 3.10+ installed, then:
 ```bash
 pip install dapplepot-sdk
 
