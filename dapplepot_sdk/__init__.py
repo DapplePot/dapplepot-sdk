@@ -1,6 +1,5 @@
 import logging
 import random
-import sys
 
 import requests
 
@@ -79,13 +78,6 @@ class DapplePot:
         )
 
         self._framework = 'unknown'
-        # Auto-register with OpenAI/Anthropic proxies if they were imported before
-        # the client was created (the documented usage pattern).
-        for mod_name in ('dapplepot_sdk.openai', 'dapplepot_sdk.anthropic'):
-            mod = sys.modules.get(mod_name)
-            if mod is not None:
-                mod._patch(self)
-                self._framework = mod_name.split('.')[-1]  # 'openai' or 'anthropic'
 
     # ── startup ───────────────────────────────────────────────────────────────
 
@@ -172,27 +164,53 @@ class DapplePot:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def callback_handler(self, session_id: str = None):
+    def instrument_anthropic(self) -> None:
+        """Patch the Anthropic SDK so all messages.create() calls are traced automatically.
+
+        Call once after DapplePot() is initialised, before creating your Anthropic client.
+        The standard anthropic package is unaffected — upgrade it freely at any time.
+
+        Usage::
+
+            import anthropic
+            from dapplepot_sdk import DapplePot
+
+            dp = DapplePot(...)
+            dp.instrument_anthropic()
+
+            client = anthropic.Anthropic(api_key="...")
+        """
+        from dapplepot_sdk import anthropic as _dp_anth
+        _dp_anth._patch(self)
+        self._framework = 'anthropic'
+
+    def instrument_openai(self) -> None:
+        """Patch the OpenAI SDK so all chat.completions.create() calls are traced automatically.
+
+        Call once after DapplePot() is initialised, before creating your OpenAI client.
+
+        Usage::
+
+            import openai
+            from dapplepot_sdk import DapplePot
+
+            dp = DapplePot(...)
+            dp.instrument_openai()
+
+            client = openai.OpenAI(api_key="...")
+        """
+        from dapplepot_sdk import openai as _dp_openai
+        _dp_openai._patch(self)
+        self._framework = 'openai'
+
+    def callback_handler(self, session_id: str = None, user_context_id: str = None,
+                         user_tenant_id: str = None):
         """Return a fresh LangChain/LangGraph CallbackHandler for one session."""
         from dapplepot_sdk._langchain import DapplePotCallbackHandler
         self._framework = 'langchain'
-        return DapplePotCallbackHandler(self, session_id=session_id)
-
-    def instrument_llama_index(self) -> None:
-        """Process-wide LlamaIndex instrumentation. Call once at startup."""
-        from dapplepot_sdk._llama_index import instrument
-        instrument(self)
-        self._framework = 'llama_index'
-
-    def uninstrument_llama_index(self) -> None:
-        from dapplepot_sdk._llama_index import uninstrument
-        uninstrument()
-
-    def register_litellm_callbacks(self) -> None:
-        """Register DapplePot as LiteLLM's success/failure callbacks."""
-        from dapplepot_sdk._litellm import register
-        register(self)
-        self._framework = 'litellm'
+        return DapplePotCallbackHandler(self, session_id=session_id,
+                                        user_context_id=user_context_id,
+                                        user_tenant_id=user_tenant_id)
 
     def session(self, session_id: str = None, user_context_id: str = None,
                 user_tenant_id: str = None):
@@ -200,6 +218,25 @@ class DapplePot:
         from dapplepot_sdk.session import SessionContext
         return SessionContext(self, session_id=session_id, user_context_id=user_context_id,
                               user_tenant_id=user_tenant_id)
+
+    def node(self, node_name: str, input=None):
+        """Context manager to trace a named step inside an active dp.session().
+
+        Emits node_start on enter and node_end / node_error on exit.
+        Use this to add structure to your agent loop — it is entirely optional.
+
+        Usage::
+
+            with dp.node("retrieval", input=query):
+                docs = vector_store.search(query)
+
+            with dp.node("call_model"):
+                response = client.messages.create(...)
+        """
+        from dapplepot_sdk._node_context import NodeContext
+        from dapplepot_sdk.session import get_current_session_id
+        return NodeContext(self, session_id=get_current_session_id(),
+                           node_name=node_name, input=input)
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
         """Flush remaining events and stop background threads."""

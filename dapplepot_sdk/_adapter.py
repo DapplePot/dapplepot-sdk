@@ -133,6 +133,20 @@ class TraceAdapter:
             e['payload']['latency_ms'] = latency_ms
         return e
 
+    def llm_error(self, session_id: str, model: str | None = None, error_type: str = None,
+                  error_message: str = None, latency_ms: int = None) -> dict:
+        e = self._base(session_id, 'llm_error')
+        e['payload'] = {}
+        if model:
+            e['payload']['model'] = model
+        if error_type:
+            e['payload']['error_type'] = error_type
+        if error_message:
+            e['payload']['error_message'] = error_message
+        if latency_ms is not None:
+            e['payload']['latency_ms'] = latency_ms
+        return e
+
     def tool_start(self, session_id: str, tool_name: str, tool_input) -> dict:
         e = self._base(session_id, 'tool_start')
         e['payload'] = {'tool_name': tool_name, 'tool_input': tool_input}

@@ -20,12 +20,14 @@ class DapplePotCallbackHandler(_Base):
 
     raise_error = True  # propagate DapplePotBlockedError / SessionTerminatedError instead of swallowing
 
-    def __init__(self, client, session_id: str = None, user_context_id: str = None):
+    def __init__(self, client, session_id: str = None, user_context_id: str = None,
+                 user_tenant_id: str = None):
         if _Base is not object:
             super().__init__()
         self._client = client
         self._session_id = session_id or str(uuid.uuid4())
         self._user_context_id = user_context_id
+        self._user_tenant_id = user_tenant_id
         self._adapter = client._adapter('langchain')
         self._t: dict = {}
         self._node_names: dict = {}
@@ -55,7 +57,9 @@ class DapplePotCallbackHandler(_Base):
                 else None
             )
             self._emit(self._adapter.session_start(
-                self._session_id, input=initial, user_context_id=self._user_context_id
+                self._session_id, input=initial,
+                user_context_id=self._user_context_id,
+                user_tenant_id=self._user_tenant_id,
             ))
         else:
             # LangGraph passes the node name via kwargs['name']; fall back to serialized
@@ -95,14 +99,24 @@ class DapplePotCallbackHandler(_Base):
 
     def on_chain_error(self, error, **kwargs):
         parent = kwargs.get('parent_run_id')
+        from dapplepot_sdk import DapplePotSessionTerminatedError, DapplePotBlockedError
+        if isinstance(error, (DapplePotSessionTerminatedError, DapplePotBlockedError)):
+            # session_error was already emitted and flushed by the interceptor
+            return
         if parent is None:
-            from dapplepot_sdk import DapplePotSessionTerminatedError, DapplePotBlockedError
-            if isinstance(error, (DapplePotSessionTerminatedError, DapplePotBlockedError)):
-                # session_error was already emitted and flushed by the interceptor
-                return
             self._emit(
                 self._adapter.session_error(
                     self._session_id,
+                    error_type=type(error).__name__,
+                    error_message=str(error),
+                )
+            )
+        else:
+            run_id = str(kwargs.get('run_id', ''))
+            name = self._node_names.pop(run_id, 'chain')
+            self._emit(
+                self._adapter.node_error(
+                    self._session_id, node_name=name,
                     error_type=type(error).__name__,
                     error_message=str(error),
                 )
@@ -172,10 +186,15 @@ class DapplePotCallbackHandler(_Base):
         )
 
     def on_llm_error(self, error, **kwargs):
+        run_id = str(kwargs.get('run_id', ''))
+        latency_ms = self._elapsed(run_id)
+        # Close the open llm_start span; on_chain_error handles session/node_error
         self._emit(
-            self._adapter.node_error(
-                self._session_id, node_name='llm',
-                error_type=type(error).__name__, error_message=str(error),
+            self._adapter.llm_error(
+                self._session_id,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                latency_ms=latency_ms,
             )
         )
 
@@ -201,9 +220,11 @@ class DapplePotCallbackHandler(_Base):
         )
 
     def on_tool_error(self, error, **kwargs):
+        tool_name = kwargs.get('name', 'unknown')
+        # Close the open tool_start span with a tool_error
         self._emit(
-            self._adapter.node_error(
-                self._session_id, node_name='tool',
+            self._adapter.tool_error(
+                self._session_id, tool_name=tool_name,
                 error_type=type(error).__name__, error_message=str(error),
             )
         )
