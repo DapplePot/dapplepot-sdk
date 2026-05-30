@@ -242,6 +242,8 @@ You can also redact known keys without touching values:
 dp = DapplePot(..., redact_keys=["api_key", "password", "ssn"])
 ```
 
+**Impact on detection:** Scrubbing runs after real-time online checks, so live session checks marked for online detection (e.g. `SID-02a`) still operate on the original content and fire correctly. However, events stored for post-session analysis contain the scrubbed values — PII is replaced with tokens like `[EMAIL]` or `[SANITIZED]` before storage, so any offline detection pass on those events will find nothing to flag.
+
 ## Event Reference
 
 All events flow through `POST {ingest_url}/v1/ingest/events`.
