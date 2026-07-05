@@ -22,6 +22,14 @@ class _SafeEncoder(json.JSONEncoder):
 
 
 class EventBuffer:
+    """In-memory queue + background thread that batches events to the ingest API.
+
+    Events are pushed via :meth:`push` (fire-and-forget, enqueues only) and
+    drained periodically by a daemon thread that POSTs batches to
+    ``{ingest_url}/v1/ingest/events``. Also tracks per-session sampling
+    decisions and sequence numbers used to keep events ordered.
+    """
+
     def __init__(self, ingest_url: str, sdk_key: str,
                  flush_interval_ms: int = 500, flush_batch_size: int = 100):
         self._url = ingest_url.rstrip('/') + '/v1/ingest/events'
@@ -41,14 +49,22 @@ class EventBuffer:
     # ── sampling ──────────────────────────────────────────────────────────────
 
     def set_sampled(self, session_id: str, sampled: bool) -> None:
+        """Record whether ``session_id`` was selected by DapplePot's sample_rate."""
         self._session_samples[session_id] = sampled
 
     def is_sampled(self, session_id: str) -> bool:
+        """Whether events for ``session_id`` should be kept (default True if unknown)."""
         return self._session_samples.get(session_id, True)
 
     # ── push ──────────────────────────────────────────────────────────────────
 
     def push(self, event: dict) -> None:
+        """Enqueue ``event`` for the background thread to flush.
+
+        Drops the event if its session was sampled out. Assigns/reconciles
+        ``sequence_index`` so events within a session stay ordered even
+        when interleaved across threads.
+        """
         sid = event.get('dp_session_id')
         if sid and not self.is_sampled(sid):
             return
@@ -66,9 +82,11 @@ class EventBuffer:
         self._queue.put(event)
 
     def set_session_seq(self, session_id: str, next_seq: int) -> None:
+        """Set the next sequence_index to assign for ``session_id`` (used to resume a session)."""
         self._session_seqs[session_id] = next_seq
 
     def get_session_last_seq(self, session_id: str) -> int | None:
+        """Return the last sequence_index used for ``session_id``, or None if none pushed yet."""
         next_seq = self._session_seqs.get(session_id)
         if not next_seq:
             return None

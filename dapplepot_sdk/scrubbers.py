@@ -1,3 +1,5 @@
+"""PII/secret scrubbing for event payloads — pass a scrubber via ``DapplePot(pii_scrubber=...)``."""
+
 import re
 from abc import ABC, abstractmethod
 
@@ -15,11 +17,49 @@ PATTERNS = {
 
 
 class BaseScrubber(ABC):
+    """Interface for scrubbing sensitive text out of event payloads.
+
+    Pass an instance to ``DapplePot(pii_scrubber=...)`` to have it applied
+    to every event payload before it's buffered/flushed. Subclass this to
+    plug in your own redaction logic (e.g. a call to an internal PII
+    detection service) instead of the built-in regex-based
+    :class:`RegexScrubber`.
+
+    Usage::
+
+        class UppercaseNamesScrubber(BaseScrubber):
+            def scrub(self, text: str) -> str:
+                return text.replace("Alice", "[NAME]").replace("Bob", "[NAME]")
+
+        dp = DapplePot(..., pii_scrubber=UppercaseNamesScrubber())
+    """
+
     @abstractmethod
     def scrub(self, text: str) -> str:
-        pass
+        """Return ``text`` with sensitive substrings replaced.
+
+        Args:
+            text: The raw string to scrub.
+
+        Returns:
+            The scrubbed string.
+        """
 
     def scrub_value(self, value):
+        """Recursively apply :meth:`scrub` to every string in ``value``.
+
+        Walks dicts and lists in place (returning new copies), applying
+        :meth:`scrub` to each string leaf and leaving other types (numbers,
+        booleans, ``None``) untouched. This is what
+        :class:`~dapplepot_sdk.DapplePot` calls internally on each event
+        payload — subclasses generally don't need to override it.
+
+        Args:
+            value: A string, dict, list, or other JSON-serializable value.
+
+        Returns:
+            A value of the same shape with all string leaves scrubbed.
+        """
         if isinstance(value, str):
             return self.scrub(value)
         if isinstance(value, dict):
@@ -30,7 +70,32 @@ class BaseScrubber(ABC):
 
 
 class RegexScrubber(BaseScrubber):
+    """Built-in scrubber that redacts common PII/secret patterns via regex.
+
+    Available pattern names (passed via ``patterns``): ``email``, ``phone``,
+    ``ssn``, ``credit_card``, ``uk_nino``, ``iban``, ``ip_address``,
+    ``aws_key``, ``jwt``. Each match is replaced with a bracketed tag, e.g.
+    an email becomes ``[EMAIL]``.
+
+    Usage::
+
+        from dapplepot_sdk.scrubbers import RegexScrubber
+
+        # Scrub everything the built-in patterns cover:
+        dp = DapplePot(..., pii_scrubber=RegexScrubber())
+
+        # Or restrict to specific patterns:
+        dp = DapplePot(..., pii_scrubber=RegexScrubber(patterns=["email", "aws_key"]))
+    """
+
     def __init__(self, patterns=None):
+        """Compile the given (or all built-in) patterns.
+
+        Args:
+            patterns: List of pattern names to enable (see class docstring
+                for the full list). Defaults to all built-in patterns.
+                Unknown names are silently ignored.
+        """
         if patterns is None:
             patterns = list(PATTERNS.keys())
         self._compiled = [
@@ -40,6 +105,15 @@ class RegexScrubber(BaseScrubber):
         ]
 
     def scrub(self, text: str) -> str:
+        """Replace every configured pattern match in ``text``.
+
+        Args:
+            text: The raw string to scrub.
+
+        Returns:
+            The scrubbed string, with each configured pattern's matches
+            replaced by its redaction tag (e.g. ``[EMAIL]``).
+        """
         for pattern, replacement in self._compiled:
             text = pattern.sub(replacement, text)
         return text

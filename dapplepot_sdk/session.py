@@ -1,3 +1,5 @@
+"""Session context manager backing ``DapplePot.session()`` — see that method's docstring."""
+
 import uuid
 import time
 import threading
@@ -7,12 +9,31 @@ _local = threading.local()
 
 
 def get_current_session_id() -> str | None:
+    """Return the session ID of the currently active ``dp.session()``, if any.
+
+    Reads a thread-local set by :class:`SessionContext.__enter__`. Used
+    internally by ``dp.node()`` so nodes are automatically attributed to
+    the enclosing session without needing it passed explicitly.
+
+    Returns:
+        The active session ID, or ``None`` if no session is currently open
+        on this thread.
+    """
     return getattr(_local, 'session_id', None)
 
 
 class SessionContext:
+    """Context manager backing ``dp.session()`` — see that method's docstring.
+
+    Handles session lifecycle: emits ``session_start``/``session_end``/
+    ``session_error`` events, resumes sequence numbering for a reused
+    ``session_id``, and enforces session-level termination raised by
+    security policy (:class:`~dapplepot_sdk.DapplePotSessionTerminatedError`).
+    """
+
     def __init__(self, client, session_id: str = None, user_context_id: str = None,
                  user_tenant_id: str = None):
+        """Args mirror :meth:`dapplepot_sdk.DapplePot.session`."""
         self._client = client
         self._session_id = session_id or str(uuid.uuid4())
         self._user_context_id = user_context_id
@@ -21,17 +42,21 @@ class SessionContext:
 
     @property
     def session_id(self) -> str:
+        """The session ID in use — generated if none was passed in."""
         return self._session_id
 
     @property
     def user_context_id(self) -> str | None:
+        """The end-user/context identifier attached to this session, if any."""
         return self._user_context_id
 
     @property
     def user_tenant_id(self) -> str | None:
+        """The tenant identifier attached to this session, if any."""
         return self._user_tenant_id
 
     def __enter__(self):
+        """Start the session: sample, resume seq offset, emit session_start."""
         self._t0 = time.time()
         sampled = self._client._should_sample()
         self._client._buffer.set_sampled(self._session_id, sampled)
@@ -54,6 +79,7 @@ class SessionContext:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """End the session: emit session_end/session_error, flush, store seq offset."""
         from dapplepot_sdk import DapplePotSessionTerminatedError, DapplePotBlockedError
         latency_ms = int((time.time() - self._t0) * 1000) if self._t0 else None
         framework = getattr(self._client, '_framework', 'unknown')

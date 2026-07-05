@@ -25,11 +25,21 @@ def first_user_text(messages: list) -> "str | None":
 
 
 class TraceAdapter:
+    """Builds DapplePot event dicts (the ingest API's wire schema).
+
+    One instance is scoped to a single agent/framework pair (see
+    ``DapplePot._adapter()``). Each ``*_start``/``*_end``/``*_error`` method
+    below builds one event dict ready to hand to
+    ``DapplePot._process_event()`` — it does not send anything over the
+    network itself.
+    """
+
     def __init__(self, agent_id: str, framework: str):
         self._agent_id = agent_id
         self._framework = framework
 
     def _base(self, session_id: str, event_type: str) -> dict:
+        """Build the common envelope fields shared by every event type."""
         return {
             'dp_agent_id':       self._agent_id,
             'dp_session_id':     session_id,
@@ -44,6 +54,7 @@ class TraceAdapter:
 
     def session_start(self, session_id: str, user_context_id: str = None, metadata=None,
                       input=None, user_tenant_id: str = None) -> dict:
+        """Build a session_start event, emitted on entering dp.session()."""
         e = self._base(session_id, 'session_start')
         if user_context_id:
             e['user_context_id'] = user_context_id
@@ -61,6 +72,7 @@ class TraceAdapter:
         return e
 
     def session_end(self, session_id: str, output=None, latency_ms=None, total_tokens=None) -> dict:
+        """Build a session_end event, emitted on a clean exit from dp.session()."""
         e = self._base(session_id, 'session_end')
         e['payload'] = {}
         if output is not None:
@@ -73,6 +85,7 @@ class TraceAdapter:
 
     def session_error(self, session_id: str, error_type: str, error_message: str,
                       traceback: str = None, exit_reason: str = None) -> dict:
+        """Build a session_error event, emitted when dp.session() exits via an exception."""
         e = self._base(session_id, 'session_error')
         e['payload'] = {'error_type': error_type, 'error_message': error_message}
         if traceback:
@@ -82,6 +95,7 @@ class TraceAdapter:
         return e
 
     def node_start(self, session_id: str, node_name: str, parent_span_id=None, input=None) -> dict:
+        """Build a node_start event, emitted on entering dp.node()."""
         e = self._base(session_id, 'node_start')
         e['payload'] = {'node_name': node_name}
         if parent_span_id:
@@ -91,6 +105,7 @@ class TraceAdapter:
         return e
 
     def node_end(self, session_id: str, node_name: str, output=None, latency_ms=None) -> dict:
+        """Build a node_end event, emitted on a clean exit from dp.node()."""
         e = self._base(session_id, 'node_end')
         e['payload'] = {'node_name': node_name}
         if output is not None:
@@ -100,6 +115,7 @@ class TraceAdapter:
         return e
 
     def node_error(self, session_id: str, node_name: str, error_type: str, error_message: str, traceback: str = None) -> dict:
+        """Build a node_error event, emitted when dp.node() exits via an exception."""
         e = self._base(session_id, 'node_error')
         e['payload'] = {'node_name': node_name, 'error_type': error_type, 'error_message': error_message}
         if traceback:
@@ -108,6 +124,7 @@ class TraceAdapter:
 
     def llm_start(self, session_id: str, model: str, messages: list,
                   temperature=None, max_tokens=None, tools=None) -> dict:
+        """Build an llm_start event, emitted just before an instrumented LLM call."""
         e = self._base(session_id, 'llm_start')
         e['payload'] = {'model': model, 'messages': messages}
         if temperature is not None:
@@ -119,6 +136,7 @@ class TraceAdapter:
         return e
 
     def llm_end(self, session_id: str, completion: str, model: str | None = None, finish_reason=None, usage=None, latency_ms=None, streamed: bool = False) -> dict:
+        """Build an llm_end event, emitted after an instrumented LLM call completes."""
         e = self._base(session_id, 'llm_end')
         e['payload'] = {'completion': completion}
         if model:
@@ -135,6 +153,7 @@ class TraceAdapter:
 
     def llm_error(self, session_id: str, model: str | None = None, error_type: str = None,
                   error_message: str = None, latency_ms: int = None) -> dict:
+        """Build an llm_error event, emitted when an instrumented LLM call raises."""
         e = self._base(session_id, 'llm_error')
         e['payload'] = {}
         if model:
@@ -148,12 +167,14 @@ class TraceAdapter:
         return e
 
     def tool_start(self, session_id: str, tool_name: str, tool_input) -> dict:
+        """Build a tool_start event, emitted when a tool call is detected."""
         e = self._base(session_id, 'tool_start')
         e['payload'] = {'tool_name': tool_name, 'tool_input': tool_input}
         return e
 
     def tool_error(self, session_id: str, tool_name: str, error_message: str,
                    error_type: str = "ToolError", tool_input=None) -> dict:
+        """Build a tool_error event, emitted when a tool call fails."""
         e = self._base(session_id, 'tool_error')
         e['payload'] = {'tool_name': tool_name, 'error_type': error_type, 'error_message': error_message}
         if tool_input is not None:
@@ -161,6 +182,7 @@ class TraceAdapter:
         return e
 
     def tool_end(self, session_id: str, tool_name: str, tool_output, latency_ms=None) -> dict:
+        """Build a tool_end event, emitted when a tool call's result is observed."""
         e = self._base(session_id, 'tool_end')
         e['payload'] = {'tool_name': tool_name, 'tool_output': tool_output}
         if latency_ms is not None:

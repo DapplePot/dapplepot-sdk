@@ -32,6 +32,7 @@ _pending_tools: dict[str, dict[str, tuple[str, float]]] = {}
 
 
 def _get_client():
+    """Return the DapplePot client this module was patched with, if any."""
     return _client_ref
 
 
@@ -92,6 +93,7 @@ class _OpenAIStreamAccumulator:
         self.finish_reason = None
 
     def absorb(self, chunk) -> None:
+        """Fold one streamed chunk into the accumulator's running state."""
         choices = getattr(chunk, 'choices', None) or []
         if choices:
             choice = choices[0]
@@ -125,6 +127,7 @@ class _OpenAIStreamAccumulator:
             self.usage = u
 
     def usage_dict(self):
+        """Return the accumulated token usage, or None if none was observed."""
         if self.usage is None:
             return None
         return {
@@ -133,6 +136,7 @@ class _OpenAIStreamAccumulator:
         }
 
     def collected_tool_calls(self) -> list:
+        """Return reassembled tool calls, ordered by their stream index."""
         return [self.tool_calls[k] for k in sorted(self.tool_calls.keys())]
 
 
@@ -179,6 +183,7 @@ class _TracingStream:
             self._close()
 
     def _close(self):
+        """Fire on_close(accumulator) exactly once, however iteration ended."""
         if self._closed:
             return
         self._closed = True
@@ -239,6 +244,7 @@ class _AsyncTracingStream:
             self._close()
 
     def _close(self):
+        """Fire on_close(accumulator) exactly once, however iteration ended."""
         if self._closed:
             return
         self._closed = True
@@ -258,6 +264,15 @@ class _AsyncTracingStream:
 
 
 def _patch(client) -> None:
+    """Monkey-patch ``openai`` chat completions to emit trace events.
+
+    Called by :meth:`dapplepot_sdk.DapplePot.instrument_openai`. Patches
+    the ``Completions`` class (not the lazy module-level proxy — see
+    inline note below) so every ``chat.completions.create()`` call, sync
+    or async, streaming or not, emits ``llm_start``/``llm_end``/
+    ``llm_error`` (and ``tool_start``/``tool_end`` for tool calls), via the
+    stream accumulator/wrapper classes above. Safe to call more than once.
+    """
     global _client_ref
     _client_ref = client
 

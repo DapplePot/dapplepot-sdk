@@ -36,6 +36,7 @@ _pending_tools: dict[str, dict[str, tuple[str, float]]] = {}
 
 
 def _get_client():
+    """Return the DapplePot client this module was patched with, if any."""
     return _client_ref
 
 
@@ -118,6 +119,7 @@ class _AnthropicStreamAccumulator:
         self.output_tokens = None
 
     def absorb(self, event) -> None:
+        """Fold one streamed SSE event into the accumulator's running state."""
         etype = getattr(event, 'type', None)
 
         if etype == 'message_start':
@@ -171,6 +173,7 @@ class _AnthropicStreamAccumulator:
                     self.output_tokens = ot
 
     def usage_dict(self):
+        """Return the accumulated token usage, or None if nothing was observed yet."""
         if self.input_tokens is None and self.output_tokens is None:
             return None
         return {
@@ -270,6 +273,7 @@ class _AnthropicTracingStream:
             self._close()
 
     def _close(self):
+        """Fire on_close(accumulator) exactly once, however iteration ended."""
         if self._closed:
             return
         self._closed = True
@@ -329,6 +333,7 @@ class _AnthropicAsyncTracingStream:
             self._close()
 
     def _close(self):
+        """Fire on_close(accumulator) exactly once, however iteration ended."""
         if self._closed:
             return
         self._closed = True
@@ -385,6 +390,7 @@ class _AnthropicMessageStreamManagerWrapper:
                 self._close(final_msg)
 
     def _close(self, final_msg):
+        """Fire on_close(accumulator) exactly once, built from the final message."""
         if self._closed:
             return
         self._closed = True
@@ -430,6 +436,7 @@ class _AnthropicAsyncMessageStreamManagerWrapper:
                 self._close(final_msg)
 
     def _close(self, final_msg):
+        """Fire on_close(accumulator) exactly once, built from the final message."""
         if self._closed:
             return
         self._closed = True
@@ -446,6 +453,16 @@ class _AnthropicAsyncMessageStreamManagerWrapper:
 
 
 def _patch(client) -> None:
+    """Monkey-patch ``anthropic.resources.Messages.create`` to emit trace events.
+
+    Called by :meth:`dapplepot_sdk.DapplePot.instrument_anthropic`. Wraps
+    both sync/async and streaming/non-streaming call shapes so that every
+    ``messages.create()`` invocation emits ``llm_start``/``llm_end``/
+    ``llm_error`` (and ``tool_start``/``tool_end`` when tool_use content is
+    observed), via the stream accumulator/wrapper classes above. Safe to
+    call more than once; re-patches idempotently against the original
+    unpatched method.
+    """
     global _client_ref
     _client_ref = client
 

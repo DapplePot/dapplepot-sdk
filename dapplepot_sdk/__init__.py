@@ -1,3 +1,8 @@
+"""DapplePot Python SDK — runtime security and observability for AI agents.
+
+See :class:`DapplePot` for the main entry point.
+"""
+
 import logging
 import random
 
@@ -21,6 +26,19 @@ _ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
 
 
 class DapplePotBlockedError(Exception):
+    """Raised when an online security check blocks the call in progress.
+
+    DapplePot evaluates active online sub-checks (e.g. prompt injection,
+    excessive agency) synchronously as events are recorded. When a check's
+    configured action is ``block_call``, the SDK raises this instead of
+    letting the underlying LLM/tool call proceed.
+
+    Attributes:
+        signal: The sub-check ID that triggered the block (e.g. ``"PI-01a"``).
+        reason: Human-readable explanation of why the call was blocked.
+        session_id: The session in which the block occurred.
+    """
+
     def __init__(self, signal: str, reason: str, session_id: str):
         super().__init__(f'[{signal}] {reason}')
         self.signal = signal
@@ -29,10 +47,32 @@ class DapplePotBlockedError(Exception):
 
 
 class DapplePotSessionTerminatedError(Exception):
-    pass
+    """Raised when a security policy terminates the current session.
+
+    Unlike :class:`DapplePotBlockedError` (which blocks a single call),
+    this indicates the whole session has been shut down by policy and no
+    further calls should be made within it.
+    """
 
 
 class DapplePot:
+    """Main SDK client — instrument LLM frameworks and stream traced events.
+
+    Create one ``DapplePot`` instance per application (or per long-lived
+    worker), then call one of ``instrument_anthropic()``,
+    ``instrument_openai()``, or ``callback_handler()`` to start capturing
+    LLM/tool activity. Events are evaluated against your account's active
+    security checks synchronously, optionally PII-scrubbed, then buffered
+    and flushed in the background to the DapplePot ingest API.
+
+    Usage::
+
+        from dapplepot_sdk import DapplePot
+
+        dp = DapplePot(sdk_key="dp_sk_...", agent_id="my-agent")
+        dp.instrument_anthropic()
+    """
+
     def __init__(
         self,
         sdk_key: str,
@@ -45,6 +85,32 @@ class DapplePot:
         flush_interval_ms: int = 500,
         flush_batch_size: int = 100,
     ):
+        """Initialize the client and fetch this agent's security config.
+
+        Args:
+            sdk_key: Your DapplePot SDK key, used as a bearer token for
+                both the config/manifest lookups made here and every
+                event flush made by the background buffer.
+            agent_id: The ID of the agent this client instruments, used to
+                scope config lookups (subcheck overrides, tool manifest).
+            ingest_url: Base URL of the DapplePot ingest API. Defaults to
+                the production endpoint; override for self-hosted or
+                staging deployments.
+            sample_rate: Fraction of sessions to actually trace, in
+                ``[0.0, 1.0]``. ``1.0`` (default) traces every session.
+                Use a lower value to cut ingest volume on high-throughput
+                agents — security checks still run on sampled sessions.
+            pii_scrubber: Optional :class:`dapplepot_sdk.scrubbers.BaseScrubber`
+                instance (e.g. ``RegexScrubber``) applied to event payloads
+                before they're buffered, so sensitive text never leaves
+                the process.
+            redact_keys: Optional list of dict keys to redact wholesale
+                (replaced with ``"[REDACTED]"``) anywhere they appear in
+                an event payload, e.g. ``["api_key", "password"]``.
+            flush_interval_ms: How often the background buffer flushes
+                queued events to the ingest API, in milliseconds.
+            flush_batch_size: Max number of events sent per flush request.
+        """
         self._sdk_key      = sdk_key
         self._agent_id     = agent_id
         self._ingest_url   = (ingest_url or _DEFAULT_INGEST_URL).rstrip('/')
@@ -130,15 +196,18 @@ class DapplePot:
     # ── internal helpers ──────────────────────────────────────────────────────
 
     def _adapter(self, framework: str) -> TraceAdapter:
+        """Build a TraceAdapter scoped to this agent and the given framework."""
         return TraceAdapter(
             agent_id=self._agent_id,
             framework=framework,
         )
 
     def _should_sample(self) -> bool:
+        """Roll the dice against sample_rate for a new session."""
         return random.random() < self._sample_rate
 
     def _scrub(self, event: dict) -> dict:
+        """Apply pii_scrubber and redact_keys to an event's payload, if configured."""
         if not self._pii_scrubber and not self._redact_keys:
             return event
         payload = event.get('payload', {})
@@ -149,6 +218,7 @@ class DapplePot:
         return {**event, 'payload': payload}
 
     def _redact_keys_in(self, obj):
+        """Recursively replace values of any key in redact_keys with '[REDACTED]'."""
         if isinstance(obj, dict):
             return {k: '[REDACTED]' if k in self._redact_keys else self._redact_keys_in(v)
                     for k, v in obj.items()}
@@ -157,6 +227,7 @@ class DapplePot:
         return obj
 
     def _process_event(self, event: dict) -> None:
+        """Run the full per-event pipeline: security check, scrub, buffer."""
         event = self._interceptor.evaluate(event)
         event = self._scrub(event)
         self._buffer.push(event)
@@ -204,7 +275,32 @@ class DapplePot:
 
     def callback_handler(self, session_id: str = None, user_context_id: str = None,
                          user_tenant_id: str = None):
-        """Return a fresh LangChain/LangGraph CallbackHandler for one session."""
+        """Return a fresh LangChain/LangGraph callback handler for one session.
+
+        Use this instead of ``instrument_anthropic()``/``instrument_openai()``
+        when your agent is built with LangChain or LangGraph — those
+        frameworks already have a callback protocol, so DapplePot hooks in
+        that way rather than patching the underlying model client. Create a
+        new handler per logical session; it is not intended to be reused
+        across unrelated sessions.
+
+        Args:
+            session_id: Resume an existing session instead of starting a
+                new one. Leave unset to start a fresh session.
+            user_context_id: Opaque end-user/context identifier to attach
+                to every event emitted by this handler.
+            user_tenant_id: Opaque tenant identifier, for multi-tenant
+                agents, attached to every event emitted by this handler.
+
+        Returns:
+            A ``DapplePotCallbackHandler`` implementing LangChain's
+            ``BaseCallbackHandler`` interface.
+
+        Usage::
+
+            handler = dp.callback_handler(user_context_id="user_123")
+            result = chain.invoke({"input": "Hello!"}, config={"callbacks": [handler]})
+        """
         from dapplepot_sdk._langchain import DapplePotCallbackHandler
         self._framework = 'langchain'
         return DapplePotCallbackHandler(self, session_id=session_id,
@@ -213,7 +309,32 @@ class DapplePot:
 
     def session(self, session_id: str = None, user_context_id: str = None,
                 user_tenant_id: str = None):
-        """Context manager that wraps OpenAI / Anthropic calls in a DapplePot session."""
+        """Context manager that groups OpenAI/Anthropic calls into one session.
+
+        Wrap a logical unit of work (e.g. one user request) in
+        ``with dp.session():`` so that every LLM/tool call inside it is
+        attributed to the same session, and ``session_start``/
+        ``session_end``/``session_error`` events are emitted around it.
+        Only relevant when using ``instrument_anthropic()`` /
+        ``instrument_openai()`` — LangChain sessions are scoped per
+        ``callback_handler()`` instance instead.
+
+        Args:
+            session_id: Resume an existing session instead of starting a
+                new one. Leave unset to start a fresh session.
+            user_context_id: Opaque end-user/context identifier to attach
+                to every event in this session.
+            user_tenant_id: Opaque tenant identifier, for multi-tenant
+                agents, attached to every event in this session.
+
+        Returns:
+            A ``SessionContext`` context manager.
+
+        Usage::
+
+            with dp.session(user_context_id="user_123"):
+                response = client.messages.create(...)
+        """
         from dapplepot_sdk.session import SessionContext
         return SessionContext(self, session_id=session_id, user_context_id=user_context_id,
                               user_tenant_id=user_tenant_id)
@@ -238,6 +359,7 @@ class DapplePot:
                            node_name=node_name, input=input)
 
     def _fetch_session_last_seq(self, session_id: str) -> int | None:
+        """Look up the last stored event sequence number for a resumed session."""
         url = f'{self._ingest_url}/v1/sdk/seq/{session_id}'
         try:
             resp = requests.get(url, headers={'Authorization': f'Bearer {self._sdk_key}'}, timeout=3)
@@ -248,6 +370,7 @@ class DapplePot:
             return None
 
     def _store_session_last_seq(self, session_id: str, last_seq: int) -> None:
+        """Persist the last event sequence number so the session can be resumed later."""
         url = f'{self._ingest_url}/v1/sdk/seq/{session_id}'
         try:
             requests.post(url, json={'seq': last_seq},
@@ -256,5 +379,22 @@ class DapplePot:
             logger.warning('Could not store seq offset for %s: %s', session_id, exc)
 
     def shutdown(self, timeout_ms: int = 5000) -> None:
-        """Flush remaining events and stop background threads."""
+        """Flush remaining buffered events and stop the background thread.
+
+        Call this before your process exits (e.g. in a ``finally`` block or
+        an ``atexit`` handler) so events queued but not yet flushed aren't
+        lost. Safe to call more than once.
+
+        Args:
+            timeout_ms: Maximum time to wait for the final flush to
+                complete before giving up, in milliseconds.
+
+        Usage::
+
+            dp = DapplePot(...)
+            try:
+                ...
+            finally:
+                dp.shutdown()
+        """
         self._buffer.shutdown(timeout_ms=timeout_ms)

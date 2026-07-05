@@ -47,6 +47,7 @@ class OnlineCheckInterceptor:
     """
 
     def __init__(self, check_actions: dict[str, str], buffer, client) -> None:
+        """Seed the active check map from ``check_actions`` (sub_check_id -> action)."""
         self._buffer = buffer
         self._client = client
         self._action_map: dict[str, str] = {}
@@ -75,6 +76,7 @@ class OnlineCheckInterceptor:
         }
 
     def update_check_actions(self, check_actions: dict[str, str]) -> None:
+        """Alias for :meth:`update_active`."""
         self.update_active(check_actions)
 
     def set_tool_manifest(
@@ -92,10 +94,12 @@ class OnlineCheckInterceptor:
             self._ea02b_action = ea02b_action
 
     def reset_session_state(self) -> None:
+        """Reset per-session counters (e.g. tool_call_count) for a new session."""
         self._tool_call_count = 0
 
     @property
     def has_active(self) -> bool:
+        """Whether any online check is currently active and worth evaluating events against."""
         return (
             bool(self._action_map)
             or (self._ea01a_online and bool(self._tool_manifest))
