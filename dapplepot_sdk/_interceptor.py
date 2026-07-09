@@ -11,12 +11,56 @@ from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger(__name__)
 
+# ─── Enforceable sub-check ID set ─────────────────────────────────────────────
+#
+# MUST MIRROR: dapplepot-security/security_eval/registry.ENFORCEABLE_SUBCHECK_IDS
+#
+# The SDK is a separately-installed package and can't import the security
+# service's registry at runtime, so this list is duplicated. Server-side
+# validates every configured check against its own set; unknown IDs are
+# silently no-oped. That means an SDK slightly behind the server just misses
+# newly-added checks — never fires spuriously.
+#
+# To update: add IDs here, verify via
+#   python dapplepot-security/scripts/check_sdk_sync.py
+# which cross-references this set with the registry snapshot.
 _ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
-    'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
-    'SID-01a', 'SID-01c', 'SID-02a',
-    'IOH-01a',
-    'EA-01a', 'EA-02b',
+    # OW-LLM01 injection signatures
+    'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-02c',
+    'PI-03a', 'PI-03b', 'PI-05a', 'PI-07a', 'PI-08a', 'PI-09a',
+    # OW-LLM02 disclosure signatures
+    'SID-01a', 'SID-01b', 'SID-01c', 'SID-02a', 'SID-02b', 'SID-02c', 'SID-03b',
+    # OW-LLM05 output handling
+    'IOH-01a', 'IOH-01b', 'IOH-01c', 'IOH-04a',
+    # OW-LLM06 excessive-agency policy checks
+    'EA-01a', 'EA-01c', 'EA-02a', 'EA-02b', 'EA-03a', 'EA-03b', 'EA-04a',
+    # OW-ASI01 agent-goal hijack
+    'AGH-04a',
+    # OW-ASI02 tool misuse
+    'TME-03b', 'TME-06a',
+    # OW-ASI03 privilege / permission abuse
+    'IPA-01a', 'IPA-02a', 'IPA-02b',
+    # OW-ASI04 supply-chain
+    'ASCV-01a', 'ASCV-02b', 'ASCV-03b', 'ASCV-04a',
+    # OW-ASI05 code execution / RCE — deterministic signatures
+    'RCE-01a', 'RCE-01b', 'RCE-01c', 'RCE-02a', 'RCE-02b',
+    'RCE-03a', 'RCE-03b', 'RCE-05a', 'RCE-06a', 'RCE-08a',
+    # OW-ASI06 memory / context — tenant boundary
+    'MCP-01a', 'MCP-03a', 'MCP-04a',
+    # OW-ASI07 inter-agent communication
+    'IAC-01a', 'IAC-02a', 'IAC-02b', 'IAC-05a',
+    # OW-ASI09 human trust
+    'HAT-02a', 'HAT-03a',
+    # OW-ASI10 rogue behaviour
+    'RA-01b', 'RA-04a',
 })
+
+# Regex matching a call to a confirm/approve/authorize-style tool. Used by
+# the interceptor to flip `confirm_gate_seen` for the rest of the session
+# so that a later destructive call passes EA-02a.
+_EA02A_CONFIRM_GATE = re.compile(
+    r"(?i)(confirm|approve|authorize|sign_off|validate_action|review_action)"
+)
 
 # Sanitization patterns (kept for _sanitize_text)
 _PII_PATTERNS = [
@@ -58,6 +102,24 @@ class OnlineCheckInterceptor:
         self._tool_manifest: list[str] = []
         self._max_tool_calls: int | None = None
         self._tool_call_count: int = 0
+        # Governance policy fields for EA-01c / EA-02a / EA-03b
+        self._write_namespace: str | None       = None
+        self._network_allowlist: list[str]      = []
+        self._irreversible_tools: list[str]     = []
+        self._tool_approval_policy: dict[str, str] = {}
+        # Policy fields — each unlocks a different online check.
+        # All optional; None / [] means "check is silent" (blind mode).
+        self._working_directory: str | None     = None   # EA-03a
+        self._connected_llms: list[str]         = []     # EA-04a
+        self._environment: str | None           = None   # TME-03b ('production' | 'staging')
+        self._privilege_scope: list[str]        = []     # IPA-01a
+        self._mcp_endpoints: list[str]          = []     # ASCV-01a
+        self._sbom_allowlist: list[str]         = []     # ASCV-02b
+        self._connected_agents: list[str]       = []     # IAC-05a
+        self._operating_hours: dict | None      = None   # RA-01b {days, from, to}
+        # Session-scoped flag: True once a confirm/approve/authorize tool has
+        # been invoked. Reset by reset_session_state().
+        self._confirm_gate_seen: bool = False
         self._http: requests.Session = _make_session()
         self.update_active(check_actions)
 
@@ -93,9 +155,56 @@ class OnlineCheckInterceptor:
         if ea02b_action:
             self._ea02b_action = ea02b_action
 
+    def set_policy_fields(
+        self,
+        *,
+        write_namespace: str | None = None,
+        network_allowlist: list[str] | None = None,
+        irreversible_tools: list[str] | None = None,
+        tool_approval_policy: dict[str, str] | None = None,
+        working_directory: str | None = None,
+        connected_llms: list[str] | None = None,
+        environment: str | None = None,
+        privilege_scope: list[str] | None = None,
+        mcp_endpoints: list[str] | None = None,
+        sbom_allowlist: list[str] | None = None,
+        connected_agents: list[str] | None = None,
+        operating_hours: dict | None = None,
+    ) -> None:
+        """Update the Governance fields the server needs for Guard policy checks.
+
+        Called on session/agent config refresh. Any argument left as None
+        keeps its current value; pass [] or {} to explicitly clear.
+        """
+        if write_namespace is not None:
+            self._write_namespace = write_namespace or None
+        if network_allowlist is not None:
+            self._network_allowlist = list(network_allowlist)
+        if irreversible_tools is not None:
+            self._irreversible_tools = list(irreversible_tools)
+        if tool_approval_policy is not None:
+            self._tool_approval_policy = dict(tool_approval_policy)
+        if working_directory is not None:
+            self._working_directory = working_directory or None
+        if connected_llms is not None:
+            self._connected_llms = list(connected_llms)
+        if environment is not None:
+            self._environment = environment or None
+        if privilege_scope is not None:
+            self._privilege_scope = list(privilege_scope)
+        if mcp_endpoints is not None:
+            self._mcp_endpoints = list(mcp_endpoints)
+        if sbom_allowlist is not None:
+            self._sbom_allowlist = list(sbom_allowlist)
+        if connected_agents is not None:
+            self._connected_agents = list(connected_agents)
+        if operating_hours is not None:
+            self._operating_hours = dict(operating_hours) if operating_hours else None
+
     def reset_session_state(self) -> None:
         """Reset per-session counters (e.g. tool_call_count) for a new session."""
         self._tool_call_count = 0
+        self._confirm_gate_seen = False
 
     @property
     def has_active(self) -> bool:
@@ -104,6 +213,9 @@ class OnlineCheckInterceptor:
             bool(self._action_map)
             or (self._ea01a_online and bool(self._tool_manifest))
             or (self._ea02b_online and self._max_tool_calls is not None)
+            # EA-01c / EA-02a / EA-03b become active as soon as their policy
+            # field is declared (silent otherwise); the SDK doesn't need a
+            # separate per-check enable flag because _action_map covers it.
         )
 
     def evaluate(self, event: dict) -> dict:
@@ -123,6 +235,11 @@ class OnlineCheckInterceptor:
 
         if et == 'tool_start':
             self._tool_call_count += 1
+            # Track confirm-gate invocation for EA-02a. This mirrors the server
+            # regex so we don't need to round-trip a "was this a gate?" question.
+            tool_name = str(payload.get('tool_name', '') or '')
+            if tool_name and _EA02A_CONFIRM_GATE.search(tool_name):
+                self._confirm_gate_seen = True
 
         findings = self._run(et, payload, sid)
         if not findings:
@@ -178,7 +295,11 @@ class OnlineCheckInterceptor:
             self._buffer.push(session_error)
             self._buffer.flush_sync()
             self._client._store_session_last_seq(sid, -1)
-            raise DapplePotSessionTerminatedError('Session terminated by security policy')
+            raise DapplePotSessionTerminatedError(
+                message='Session terminated by security policy',
+                session_id=sid,
+                signal=terminate_sub_check,
+            )
         if block_sub_check_id:
             from dapplepot_sdk import DapplePotBlockedError
             self._buffer.flush_sync()
@@ -291,20 +412,67 @@ class OnlineCheckInterceptor:
                     'max_tool_calls': self._max_tool_calls,
                     'tool_call_count': self._tool_call_count,
                     'redact_keys': list(self._client._redact_keys),
+                    # Governance fields for EA-01c / EA-02a / EA-03b, plus the
+                    # remaining per-check policy fields below. Sent every time
+                    # so the server never has to hold per-session state — a
+                    # check is silent when its field is absent, and enforces
+                    # only when its field is non-empty AND the sub-check is
+                    # in enabled_checks.
+                    'write_namespace':      self._write_namespace,
+                    'network_allowlist':    self._network_allowlist,
+                    'irreversible_tools':   self._irreversible_tools,
+                    'tool_approval_policy': self._tool_approval_policy,
+                    'confirm_gate_seen':    self._confirm_gate_seen,
+                    'working_directory':    self._working_directory,
+                    'connected_llms':       self._connected_llms,
+                    'environment':          self._environment,
+                    'privilege_scope':      self._privilege_scope,
+                    'mcp_endpoints':        self._mcp_endpoints,
+                    'sbom_allowlist':       self._sbom_allowlist,
+                    'connected_agents':     self._connected_agents,
+                    'operating_hours':      self._operating_hours,
                 },
                 headers={'Authorization': f'Bearer {self._client._sdk_key}'},
                 timeout=5,
             )
             resp.raise_for_status()
             findings_list = resp.json().get('findings', [])
-            
+
             # Convert backend response to (finding, action) tuples
             results: list[tuple[dict, str]] = []
             for f in findings_list:
                 action = f.pop('action', 'alert')
                 results.append((f, action))
-            
+
             return results
         except Exception as exc:
-            logger.warning('online-check call failed: %s — skipping', exc)
-            return []
+            return self._on_api_failure(enabled_checks, sid, exc)
+
+    def _on_api_failure(
+        self,
+        enabled_checks: dict[str, str],
+        sid: str,
+        exc: Exception,
+    ) -> list[tuple[dict, str]]:
+        """Handle an unreachable online-check backend.
+
+        Always emits a security_availability_error event to the buffer so the
+        audit trail records the failure, then returns [] — the caller
+        (evaluate) treats it as "no findings" and lets the session continue.
+        """
+        availability_event = {
+            'dp_event_type': 'security_availability_error',
+            'event_id': str(uuid.uuid4()),
+            'dp_session_id': sid,
+            'payload': {
+                'error': str(exc)[:500],
+                'enabled_checks': sorted(enabled_checks.keys()),
+            },
+        }
+        try:
+            self._buffer.push(availability_event)
+        except Exception:
+            logger.exception('failed to push security_availability_error event')
+
+        logger.warning('online-check call failed: %s — session continues', exc)
+        return []

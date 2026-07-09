@@ -181,10 +181,30 @@ class TraceAdapter:
             e['payload']['tool_input'] = tool_input
         return e
 
-    def tool_end(self, session_id: str, tool_name: str, tool_output, latency_ms=None) -> dict:
+    def tool_end(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_output,
+        latency_ms=None,
+        # ── retrieval telemetry ─────────────────────────────
+        # When the tool is a RAG/vector-search call, populate these so the
+        # scorer can evaluate DMP-01b, VEW-01a, VEW-03a. All optional; a
+        # non-retrieval tool leaves them None. The SDK caller (usually a
+        # framework adapter) knows which tools do retrieval.
+        embedding_model=None,
+        retrieval_distance=None,
+        retrieval_similarity=None,
+    ) -> dict:
         """Build a tool_end event, emitted when a tool call's result is observed."""
         e = self._base(session_id, 'tool_end')
         e['payload'] = {'tool_name': tool_name, 'tool_output': tool_output}
         if latency_ms is not None:
             e['payload']['latency_ms'] = latency_ms
+        if embedding_model is not None:
+            e['payload']['embedding_model'] = embedding_model
+        if retrieval_distance is not None:
+            e['payload']['retrieval_distance'] = retrieval_distance
+        if retrieval_similarity is not None:
+            e['payload']['retrieval_similarity'] = retrieval_similarity
         return e

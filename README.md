@@ -13,7 +13,7 @@ From here, every Anthropic / OpenAI / LangChain / LangGraph call your agent make
 
 - **Auto-instrumentation** for the standard `openai`, `anthropic`, `langchain`, and `langgraph` packages. Upgrade them freely — DapplePot patches in-place at runtime, not at build time.
 - **Tool tracking** without code changes — `tool_start` / `tool_end` events are detected from the model's response and the next call's tool result, including multi-turn loops.
-- **12 online security checks** that run synchronously on every event (prompt injection, secret exfiltration, output handling, excessive agency) with configurable actions: `alert`, `sanitize`, `block_call`, or `terminate_session`.
+- **60 online security checks** that run synchronously on every event — prompt injection, data disclosure, output handling, excessive agency, code execution, privilege abuse, supply-chain and memory/context risks — with configurable actions: `alert`, `sanitize`, `block_call`, or `terminate_session`. Which checks are active is fetched automatically from the dashboard at startup.
 - **PII scrubbing** with built-in regex patterns or a custom scrubber, plus key-based redaction.
 - **Sync, async, and streaming** all covered in one `instrument_*()` call.
 
@@ -171,24 +171,27 @@ Call `dp.shutdown()` on exit to flush buffered events.
 
 ## Online Security Checks
 
-The SDK runs **12 sub-checks** synchronously on every event. When a check fires it emits a finding immediately (without waiting for session end). Which checks are active and what action they take is configured per-agent in the DapplePot dashboard and fetched automatically at SDK startup.
+The SDK runs **60 sub-checks** synchronously on every event, spanning both the OWASP LLM Top 10 and OWASP Agentic (ASI) Top 10. When a check fires it emits a finding immediately (without waiting for session end).
 
-| Sub-check | Category | Phase | Severity |
-|-----------|----------|-------|----------|
-| `PI-01a` | prompt_injection | input | high |
-| `PI-01b` | prompt_injection | input | critical |
-| `PI-01c` | prompt_injection | input | high |
-| `PI-02a` | prompt_injection | tool_end | high |
-| `PI-05a` | prompt_injection | input | high |
-| `PI-08a` | prompt_injection | llm_start | high |
-| `SID-01a` | data_disclosure | output | critical |
-| `SID-01c` | data_disclosure | output | critical |
-| `SID-02a` | data_disclosure | output | high |
-| `IOH-01a` | output_handling | output | critical |
-| `EA-01a` | excessive_agency | tool_start | high |
-| `EA-02b` | excessive_agency | tool_start | high |
+| OWASP signal | Category | Checks |
+|---|---|:---:|
+| OW-LLM01 | Prompt Injection | 11 |
+| OW-LLM02 | Sensitive Information Disclosure | 7 |
+| OW-LLM05 | Improper Output Handling | 4 |
+| OW-LLM06 | Excessive Agency | 7 |
+| OW-ASI01 | Agent Goal Hijack | 1 |
+| OW-ASI02 | Tool Misuse & Exploitation | 2 |
+| OW-ASI03 | Identity & Privilege Abuse | 3 |
+| OW-ASI04 | Agentic Supply Chain Vulnerabilities | 4 |
+| OW-ASI05 | Unexpected Code Execution / RCE | 10 |
+| OW-ASI06 | Memory & Context Poisoning | 3 |
+| OW-ASI07 | Insecure Inter-Agent Communication | 4 |
+| OW-ASI09 | Human-Agent Trust Exploitation | 2 |
+| OW-ASI10 | Rogue Agents | 2 |
 
-Check configuration and the tool manifest are fetched from the DapplePot API at startup. Update checks in the dashboard and restart your agent — no code changes needed.
+Which checks are active and what action they take (`alert` / `sanitize` / `block_call` / `terminate_session`) is configured per-agent in the DapplePot dashboard and fetched automatically at SDK startup — no code changes needed on your side.
+
+Some checks only activate once their Governance policy is declared in the dashboard (for example, `network_allowlist` for egress checks, or `write_namespace` for write-scope checks). An undeclared field means that check stays silent rather than firing spuriously; declaring it is picked up automatically on the next SDK startup.
 
 ### Actions
 
@@ -208,8 +211,8 @@ try:
     result = graph.invoke(...)
 except DapplePotBlockedError as e:
     print(e.signal, e.reason, e.session_id)
-except DapplePotSessionTerminatedError:
-    print("Session terminated by security policy")
+except DapplePotSessionTerminatedError as e:
+    print(e.signal, e.session_id)
 ```
 
 ## PII Scrubbing

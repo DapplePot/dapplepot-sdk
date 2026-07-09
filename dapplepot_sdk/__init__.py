@@ -17,12 +17,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_INGEST_URL = "https://api.dapplepot.com"
 
-_ONLINE_CAPABLE_SUB_CHECKS: frozenset[str] = frozenset({
-    'PI-01a', 'PI-01b', 'PI-01c', 'PI-02a', 'PI-05a', 'PI-08a',
-    'SID-01a', 'SID-01c', 'SID-02a',
-    'IOH-01a',
-    'EA-01a', 'EA-02b',
-})
+# Single source of truth in the SDK: the interceptor owns this set. Kept
+# re-exported here for backward compatibility with any external code that
+# imported it from the package root.
+from dapplepot_sdk._interceptor import _ONLINE_CAPABLE_SUB_CHECKS
 
 
 class DapplePotBlockedError(Exception):
@@ -37,8 +35,13 @@ class DapplePotBlockedError(Exception):
         signal: The sub-check ID that triggered the block (e.g. ``"PI-01a"``).
         reason: Human-readable explanation of why the call was blocked.
         session_id: The session in which the block occurred.
-    """
 
+    Note:
+        The message deliberately does not embed a dashboard URL — that
+        would couple the SDK to a specific dashboard URL shape and put
+        URLs in every customer log line. Build a link yourself from
+        ``session_id`` + ``signal`` if you want a click-through.
+    """
     def __init__(self, signal: str, reason: str, session_id: str):
         super().__init__(f'[{signal}] {reason}')
         self.signal = signal
@@ -52,7 +55,20 @@ class DapplePotSessionTerminatedError(Exception):
     Unlike :class:`DapplePotBlockedError` (which blocks a single call),
     this indicates the whole session has been shut down by policy and no
     further calls should be made within it.
+
+    Attributes:
+        signal: The sub-check ID that triggered termination, if known.
+        session_id: The session that was terminated.
     """
+    def __init__(
+        self,
+        message: str = 'Session terminated by security policy',
+        session_id: str | None = None,
+        signal: str | None = None,
+    ):
+        super().__init__(message)
+        self.session_id = session_id
+        self.signal = signal
 
 
 class DapplePot:
@@ -133,7 +149,7 @@ class DapplePot:
             client=self,
         )
 
-        tool_manifest, max_tool_calls = self._fetch_tool_manifest()
+        tool_manifest, max_tool_calls, policy_fields = self._fetch_tool_manifest()
         ea01a_action = check_actions.get('EA-01a', 'block_call')
         ea02b_action = check_actions.get('EA-02b', 'alert')
         self._interceptor.set_tool_manifest(
@@ -142,6 +158,10 @@ class DapplePot:
             max_tool_calls=max_tool_calls,
             ea02b_action=ea02b_action,
         )
+        # Policy fields silently no-op if the API doesn't return them (older
+        # API versions). Each field unlocks one online check when set.
+        if policy_fields:
+            self._interceptor.set_policy_fields(**policy_fields)
 
         self._framework = 'unknown'
 
@@ -171,8 +191,14 @@ class DapplePot:
             )
             return {}
 
-    def _fetch_tool_manifest(self) -> tuple[list[str], int | None]:
-        """Fetch the tool manifest and max_tool_calls_per_session from the API."""
+    def _fetch_tool_manifest(self) -> tuple[list[str], int | None, dict]:
+        """Fetch the governance-config bundle from the API.
+
+        Returns (tool_manifest, max_tool_calls_per_session, policy_fields).
+        `policy_fields` is a dict of policy-field kwargs suitable for
+        `OnlineCheckInterceptor.set_policy_fields(**policy_fields)`. Empty
+        when the API doesn't return those keys (older backend).
+        """
         url = f'{self._ingest_url}/v1/sdk/security/agents/{self._agent_id}/tool-manifest'
         try:
             resp = requests.get(
@@ -184,14 +210,32 @@ class DapplePot:
             data = resp.json()
             manifest = data.get('tool_manifest') or []
             max_calls = data.get('max_tool_calls_per_session')
-            logger.debug('Loaded tool manifest (%d tools, max_calls=%s)', len(manifest), max_calls)
-            return manifest, max_calls
+
+            # Policy fields — only include keys the API actually returned.
+            # `None`/missing means "keep default"; a returned key (even empty
+            # list / None) becomes the source of truth.
+            policy_fields: dict = {}
+            for key in (
+                'write_namespace', 'network_allowlist',
+                'irreversible_tools', 'tool_approval_policy',
+                'working_directory', 'connected_llms', 'environment',
+                'privilege_scope', 'mcp_endpoints', 'sbom_allowlist',
+                'connected_agents', 'operating_hours',
+            ):
+                if key in data:
+                    policy_fields[key] = data[key]
+
+            logger.debug(
+                'Loaded tool manifest (%d tools, max_calls=%s, %d policy fields)',
+                len(manifest), max_calls, len(policy_fields),
+            )
+            return manifest, max_calls, policy_fields
         except Exception as exc:
             logger.warning(
                 'Could not fetch tool manifest from %s: %s — EA-01a/EA-02b disabled',
                 url, exc,
             )
-            return [], None
+            return [], None, {}
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
