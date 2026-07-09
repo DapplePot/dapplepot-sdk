@@ -81,7 +81,7 @@ class DapplePot:
     security checks synchronously, optionally PII-scrubbed, then buffered
     and flushed in the background to the DapplePot ingest API.
 
-    Usage::
+    Example:
 
         from dapplepot_sdk import DapplePot
 
@@ -108,7 +108,10 @@ class DapplePot:
                 both the config/manifest lookups made here and every
                 event flush made by the background buffer.
             agent_id: The ID of the agent this client instruments, used to
-                scope config lookups (subcheck overrides, tool manifest).
+                scope config lookups (subcheck overrides, tool manifest,
+                and Governance policy fields like write namespace, network
+                allowlist, and approval policy that unlock specific Runtime
+                Guard checks).
             ingest_url: Base URL of the DapplePot ingest API. Defaults to
                 the production endpoint; override for self-hosted or
                 staging deployments.
@@ -284,7 +287,7 @@ class DapplePot:
         Call once after DapplePot() is initialised, before creating your Anthropic client.
         The standard anthropic package is unaffected — upgrade it freely at any time.
 
-        Usage::
+        Example:
 
             import anthropic
             from dapplepot_sdk import DapplePot
@@ -303,7 +306,7 @@ class DapplePot:
 
         Call once after DapplePot() is initialised, before creating your OpenAI client.
 
-        Usage::
+        Example:
 
             import openai
             from dapplepot_sdk import DapplePot
@@ -340,7 +343,7 @@ class DapplePot:
             A ``DapplePotCallbackHandler`` implementing LangChain's
             ``BaseCallbackHandler`` interface.
 
-        Usage::
+        Example:
 
             handler = dp.callback_handler(user_context_id="user_123")
             result = chain.invoke({"input": "Hello!"}, config={"callbacks": [handler]})
@@ -374,7 +377,7 @@ class DapplePot:
         Returns:
             A ``SessionContext`` context manager.
 
-        Usage::
+        Example:
 
             with dp.session(user_context_id="user_123"):
                 response = client.messages.create(...)
@@ -389,7 +392,7 @@ class DapplePot:
         Emits node_start on enter and node_end / node_error on exit.
         Use this to add structure to your agent loop — it is entirely optional.
 
-        Usage::
+        Example:
 
             with dp.node("retrieval", input=query):
                 docs = vector_store.search(query)
@@ -433,7 +436,7 @@ class DapplePot:
             timeout_ms: Maximum time to wait for the final flush to
                 complete before giving up, in milliseconds.
 
-        Usage::
+        Example:
 
             dp = DapplePot(...)
             try:

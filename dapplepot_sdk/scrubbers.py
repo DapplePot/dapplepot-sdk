@@ -25,8 +25,7 @@ class BaseScrubber(ABC):
     detection service) instead of the built-in regex-based
     :class:`RegexScrubber`.
 
-    Usage::
-
+    Example:
         class UppercaseNamesScrubber(BaseScrubber):
             def scrub(self, text: str) -> str:
                 return text.replace("Alice", "[NAME]").replace("Bob", "[NAME]")
@@ -77,8 +76,7 @@ class RegexScrubber(BaseScrubber):
     ``aws_key``, ``jwt``. Each match is replaced with a bracketed tag, e.g.
     an email becomes ``[EMAIL]``.
 
-    Usage::
-
+    Example:
         from dapplepot_sdk.scrubbers import RegexScrubber
 
         # Scrub everything the built-in patterns cover:
