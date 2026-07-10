@@ -124,15 +124,63 @@ class TraceAdapter:
 
     def llm_start(self, session_id: str, model: str, messages: list,
                   temperature=None, max_tokens=None, tools=None) -> dict:
-        """Build an llm_start event, emitted just before an instrumented LLM call."""
+        """Build an llm_start event, emitted just before an instrumented LLM call.
+
+        Emits a compact payload — only the essentials of THIS call — instead
+        of the full accumulated conversation history that stateful frameworks
+        (LangGraph, LangChain, Anthropic / OpenAI tool loops) rebuild for
+        every model invocation. Rebuilding + emitting the whole history on
+        every call bloats storage quadratically with turn count and buries
+        the actual "current input" in noise.
+
+        Compact fields (payload):
+            model                       — model id, unchanged
+            messages                    — 1-element list containing only the
+                                          last user/human/tool message (the
+                                          actual input triggering this call).
+                                          Same key as before; meaning changed
+                                          from "full accumulated history" to
+                                          "current turn only".
+            n_prior_context_messages    — count of every message elided from
+                                          the payload (system prompt + prior
+                                          turns). Helps consumers know how
+                                          much context was in the model's
+                                          window without carrying the bytes.
+            temperature / max_tokens / tools — unchanged
+
+        System prompt is deliberately NOT emitted — it's static per agent /
+        node, already declared via the agent manifest (which SPL-01a already
+        reads for leakage checks), and repeating it in every llm_start would
+        multiply storage cost for zero information gain.
+
+        Callers pass the same `messages` list they always did — we take the
+        essentials here so no per-adapter changes are needed."""
         e = self._base(session_id, 'llm_start')
-        e['payload'] = {'model': model, 'messages': messages}
+        payload: dict = {'model': model}
+
+        if isinstance(messages, list) and messages:
+            current = None
+            for m in reversed(messages):
+                if not isinstance(m, dict):
+                    continue
+                if m.get('role') in ('user', 'human', 'tool'):
+                    current = m
+                    break
+            if current is not None:
+                payload['messages'] = [current]
+
+            counted = 1 if current is not None else 0
+            payload['n_prior_context_messages'] = max(0, len(messages) - counted)
+        # If messages was empty or non-list, we simply don't include the
+        # message fields — the payload is still valid.
+
         if temperature is not None:
-            e['payload']['temperature'] = temperature
+            payload['temperature'] = temperature
         if max_tokens is not None:
-            e['payload']['max_tokens'] = max_tokens
+            payload['max_tokens'] = max_tokens
         if tools:
-            e['payload']['tools'] = tools
+            payload['tools'] = tools
+        e['payload'] = payload
         return e
 
     def llm_end(self, session_id: str, completion: str, model: str | None = None, finish_reason=None, usage=None, latency_ms=None, streamed: bool = False) -> dict:

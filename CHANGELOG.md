@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2] - 2026-07-10
+- `llm_start` payload is now compact: `messages` carries only the current
+  user/tool turn; `n_prior_context_messages` records elided count. System
+  prompt is no longer emitted per-event (it's already available via the
+  agent manifest for SPL-01a). Cuts storage ~90% on long / multi-node
+  stateful sessions; all framework adapters benefit uniformly.
+
 ## [0.2.1] - 2026-07-09
 - Added docstrings across the SDK's public classes and methods.
 - Expanded Runtime Guard from 12 to 60 online checks, spanning the OWASP LLM
